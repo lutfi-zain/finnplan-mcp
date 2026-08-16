@@ -87,13 +87,72 @@ npm run build
 
 ---
 
+## 🤖 Coding Agents Quick Start (Claude Code, OpenCode, Pi, OMP)
+
+Connect Eve Finance MCP to your AI coding agents in seconds. For comprehensive configuration and example prompts, see the **[Coding Agents Setup Guide](docs/CODING_AGENTS.md)**.
+
+### 1. Claude Code
+```bash
+claude mcp add --transport http eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
+```
+
+### 2. OpenCode
+In `opencode.json`:
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "eve-finance": {
+      "type": "remote",
+      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+    }
+  }
+}
+```
+
+### 3. Pi (`pi-mcp-adapter`)
+```bash
+# 1. Install adapter
+pi install npm:pi-mcp-adapter
+
+# 2. Add to .mcp.json
+{
+  "mcpServers": {
+    "eve-finance": {
+      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+    }
+  }
+}
+```
+
+### 4. OMP (Oh My Pi)
+In `.omp/mcp.json` or `.mcp.json`:
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "eve-finance": {
+      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+    }
+  }
+}
+```
+
+### ⚡ Print Agent Snippets via CLI
+```bash
+npm run agent:snippet [claude|opencode|pi|omp|all]
+```
+
+---
+
 ## 💾 Local D1 Setup & Migrations
 
-Apply the migration to your local D1 database:
+Apply migrations to your local D1 database:
 
 ```bash
-# 1. Execute database migration locally
-npx wrangler d1 execute finance_db --local --file=./drizzle/0000_real_rocket_racer.sql
+# 1. Execute database migrations locally
+npx wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql
+npx wrangler d1 execute finance_db --local --file=./drizzle/0001_low_stingray.sql
 
 # 2. Start local development server
 npm run dev
@@ -103,7 +162,7 @@ npm run dev
 
 ## 🔌 Connecting with MCP Clients
 
-- **Endpoint**: `http://localhost:8787/mcp` (or your deployed `https://finnplan-mcp.<subdomain>.workers.dev/mcp`)
+- **Endpoint**: `http://localhost:8787/mcp` (or your deployed `https://finnplan-mcp.lutfidmz.workers.dev/mcp`)
 - **Initial Connection**: No headers required to call `register_user` or `login_user`.
 - **Authenticated Calls**:
   ```json
@@ -124,8 +183,10 @@ npx wrangler d1 create finance_db
 npx wrangler secret put JWT_SECRET
 
 # 3. Apply migrations to remote D1 database
-npx wrangler d1 execute finance_db --remote --file=./drizzle/0000_real_rocket_racer.sql
+npx wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql
+npx wrangler d1 execute finance_db --remote --file=./drizzle/0001_low_stingray.sql
 
 # 4. Deploy worker
 npm run deploy
 ```
+
