@@ -84,7 +84,7 @@ class MockD1PreparedStatement {
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = ['0000_nice_marvel_boy.sql', '0001_low_stingray.sql'];
+  const migrationFiles = ['0000_nice_marvel_boy.sql', '0001_low_stingray.sql', '0001_add_transfer_and_admin_fee.sql'];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
     const ddl = readFileSync(ddlPath, 'utf-8');
@@ -859,5 +859,111 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
         feedback: 'Server tidak memiliki token github.',
       });
     }, /Missing GITHUB_TOKEN environment secret/i);
+  });
+
+  it('12. Transaction Enrichment: Wallet Transfers, Admin Fees, and Atomic Updates', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+
+    // 1. Register User
+    const regRes = await callTool(publicServer, 'register_user', {
+      firstName: 'Finance',
+      lastName: 'Enriched',
+      email: 'finance.enriched@example.com',
+      whatsappNumber: '+628111222333',
+    });
+    const { userId } = JSON.parse(regRes.content[0].text);
+    const authServer = createMCPServer(db, userId, TEST_JWT_SECRET);
+
+    // 2. Create Wallets: BCA (10,000,000 IDR) and GoPay (500,000 IDR)
+    const wBca = JSON.parse((await callTool(authServer, 'manage_wallet', { action: 'create', name: 'BCA Main', balance: 10000000 })).content[0].text);
+    const wGopay = JSON.parse((await callTool(authServer, 'manage_wallet', { action: 'create', name: 'GoPay', balance: 500000 })).content[0].text);
+    const catFood = JSON.parse((await callTool(authServer, 'manage_category', { action: 'create', name: 'Food', type: 'expense' })).content[0].text);
+
+    // 3. Record Expense with Admin Fee (e.g. Food Delivery 100,000 + fee 2,500)
+    const expenseTx = JSON.parse((await callTool(authServer, 'record_transaction', {
+      walletId: wBca.id,
+      categoryId: catFood.id,
+      amount: 100000,
+      adminFee: 2500,
+      description: 'Lunch with delivery fee',
+    })).content[0].text);
+
+    assert.equal(expenseTx.amount, 100000);
+    assert.equal(expenseTx.adminFee, 2500);
+
+    // Check BCA Balance: 10,000,000 - (100,000 + 2,500) = 9,897,500
+    const bcaAfterExpense = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
+    assert.equal(bcaAfterExpense.balance, 9897500);
+
+    // 4. Transfer Funds with Admin Fee (Transfer 2,000,000 from BCA to GoPay with adminFee 6,500)
+    const transferTx = JSON.parse((await callTool(authServer, 'transfer_funds', {
+      sourceWalletId: wBca.id,
+      targetWalletId: wGopay.id,
+      amount: 2000000,
+      adminFee: 6500,
+      description: 'Topup GoPay from BCA',
+    })).content[0].text);
+
+    assert.equal(transferTx.type, 'transfer');
+    assert.equal(transferTx.amount, 2000000);
+    assert.equal(transferTx.adminFee, 6500);
+    assert.equal(transferTx.walletId, wBca.id);
+    assert.equal(transferTx.targetWalletId, wGopay.id);
+
+    // Check BCA Balance: 9,897,500 - (2,000,000 + 6,500) = 7,891,000
+    const bcaAfterTransfer = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
+    assert.equal(bcaAfterTransfer.balance, 7891000);
+
+    // Check GoPay Balance: 500,000 + 2,000,000 = 2,500,000
+    const gopayAfterTransfer = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wGopay.id)).get())!;
+    assert.equal(gopayAfterTransfer.balance, 2500000);
+
+    // 5. Update Expense Transaction: Change amount from 100,000 to 150,000 (with fee 2,500)
+    const updatedExpense = JSON.parse((await callTool(authServer, 'update_transaction', {
+      transactionId: expenseTx.id,
+      amount: 150000,
+    })).content[0].text);
+
+    assert.equal(updatedExpense.amount, 150000);
+    // BCA balance should decrease by additional 50,000 -> 7,891,000 - 50,000 = 7,841,000
+    const bcaAfterUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
+    assert.equal(bcaAfterUpdate.balance, 7841000);
+
+    // 6. Update Transfer Transaction: Change amount from 2,000,000 to 1,000,000
+    const updatedTransfer = JSON.parse((await callTool(authServer, 'update_transaction', {
+      transactionId: transferTx.id,
+      amount: 1000000,
+    })).content[0].text);
+
+    assert.equal(updatedTransfer.amount, 1000000);
+    // BCA balance should receive 1,000,000 refund -> 7,841,000 + 1,000,000 = 8,841,000
+    const bcaAfterTransferUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
+    assert.equal(bcaAfterTransferUpdate.balance, 8841000);
+
+    // GoPay balance should decrease by 1,000,000 -> 2,500,000 - 1,000,000 = 1,500,000
+    const gopayAfterTransferUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wGopay.id)).get())!;
+    assert.equal(gopayAfterTransferUpdate.balance, 1500000);
+
+    // 7. Verify List Transactions Filter by targetWalletId & type
+    const transfersList = JSON.parse((await callTool(authServer, 'list_transactions', { type: 'transfer' })).content[0].text);
+    assert.equal(transfersList.length, 1);
+    assert.equal(transfersList[0].targetWalletId, wGopay.id);
+
+    // 8. Verify Financial Summary includes Admin Fees & Transfers
+    const summary = JSON.parse((await callTool(authServer, 'financial_summary', {})).content[0].text);
+    assert.equal(summary.totalAdminFees, 9000); // 2,500 (expense fee) + 6,500 (transfer fee)
+    assert.equal(summary.transfersCount, 1);
+    assert.equal(summary.totalExpense, 159000); // 152,500 (expense + fee) + 6,500 (transfer fee)
+    assert.equal(summary.netWorthByCurrency.IDR, 8841000 + 1500000); // 10,341,000
+
+    // 9. Negative Validation: Same source & target wallet
+    await assert.rejects(async () => {
+      await callTool(authServer, 'transfer_funds', {
+        sourceWalletId: wBca.id,
+        targetWalletId: wBca.id,
+        amount: 50000,
+      });
+    }, /cannot be the same wallet/i);
   });
 });

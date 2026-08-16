@@ -322,7 +322,7 @@ export function createMCPServer(
       // Finance Tools (Authenticated with Persistent API Key or JWT)
       {
         name: "record_transaction",
-        description: "Record a financial transaction (expense or income). Automatically and atomically updates wallet balance.",
+        description: "Record a financial transaction (expense or income) with optional admin fee. Automatically and atomically updates wallet balance.",
         inputSchema: {
           type: "object",
           properties: {
@@ -330,6 +330,7 @@ export function createMCPServer(
             categoryId: { type: "string", description: "Target Category UUID" },
             budgetId: { type: "string", description: "Optional: Linked Budget UUID" },
             amount: { type: "number", minimum: 0.01, description: "Transaction amount (positive finite number)" },
+            adminFee: { type: "number", minimum: 0, default: 0, description: "Optional administrative or transaction fee" },
             type: { type: "string", enum: ["expense", "income"], default: "expense" },
             description: { type: "string", description: "Transaction note or description (max 500 characters)" },
             isPlanned: { type: "boolean", default: false, description: "Set true for projected transactions without altering balance" },
@@ -337,6 +338,46 @@ export function createMCPServer(
             apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
           required: ["walletId", "categoryId", "amount"]
+        }
+      },
+      {
+        name: "transfer_funds",
+        description: "Transfer funds between two wallets with optional admin fee. Atomically debits source wallet (amount + adminFee) and credits target wallet (amount).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            sourceWalletId: { type: "string", description: "Source / Sender Wallet UUID" },
+            targetWalletId: { type: "string", description: "Destination / Receiver Wallet UUID" },
+            amount: { type: "number", minimum: 0.01, description: "Transfer amount (positive finite number)" },
+            adminFee: { type: "number", minimum: 0, default: 0, description: "Optional administrative / transfer fee (e.g. 2500, 6500)" },
+            categoryId: { type: "string", description: "Optional Category UUID (e.g. Transfer / Admin category)" },
+            description: { type: "string", description: "Transfer note or memo (max 500 characters)" },
+            isPlanned: { type: "boolean", default: false, description: "Set true for projected transfers without altering balance" },
+            transactionDate: { type: "string", description: "ISO date format (YYYY-MM-DD). Defaults to today." },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+          },
+          required: ["sourceWalletId", "targetWalletId", "amount"]
+        }
+      },
+      {
+        name: "update_transaction",
+        description: "Update an existing transaction (amount, admin fee, wallet, category, budget, date, note, or planned status) with automatic atomic balance reconciliation.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            transactionId: { type: "string", description: "Transaction UUID to update" },
+            amount: { type: "number", minimum: 0.01, description: "New transaction amount" },
+            adminFee: { type: "number", minimum: 0, description: "New admin fee" },
+            walletId: { type: "string", description: "New Source Wallet UUID" },
+            targetWalletId: { type: "string", description: "New Target Wallet UUID (for transfers)" },
+            categoryId: { type: "string", description: "New Category UUID" },
+            budgetId: { type: "string", description: "New Budget UUID (or empty string/null to unlink)" },
+            description: { type: "string", description: "New description (max 500 characters)" },
+            transactionDate: { type: "string", description: "New ISO date format (YYYY-MM-DD)" },
+            isPlanned: { type: "boolean", description: "New planned status" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+          },
+          required: ["transactionId"]
         }
       },
       {
@@ -390,14 +431,15 @@ export function createMCPServer(
       },
       {
         name: "list_transactions",
-        description: "Query transactions with structured filters (wallet, category, budget, date range, is_planned, pagination).",
+        description: "Query transactions with structured filters (wallet, target wallet, category, budget, type, date range, is_planned, pagination).",
         inputSchema: {
           type: "object",
           properties: {
             walletId: { type: "string", description: "Wallet UUID filter" },
+            targetWalletId: { type: "string", description: "Target Wallet UUID filter (for transfers)" },
             categoryId: { type: "string", description: "Category UUID filter" },
             budgetId: { type: "string", description: "Budget UUID filter" },
-            type: { type: "string", enum: ["expense", "income"] },
+            type: { type: "string", enum: ["expense", "income", "transfer"] },
             isPlanned: { type: "boolean" },
             startDate: { type: "string", description: "YYYY-MM-DD" },
             endDate: { type: "string", description: "YYYY-MM-DD" },
@@ -809,9 +851,40 @@ export function createMCPServer(
       throw new Error(`Invalid action '${action}' for manage_budget. Valid actions: list, create, status`);
     }
 
+    // Helper for atomic wallet balance updates & reconciliations
+    const applyBalanceDelta = async (
+      txType: string,
+      wId: string,
+      targetWId: string | null,
+      amt: number,
+      fee: number,
+      multiplier: 1 | -1
+    ) => {
+      if (txType === "expense") {
+        const delta = -(amt + fee) * multiplier;
+        await db.update(schema.wallets)
+          .set({ balance: sql`balance + ${delta}` })
+          .where(and(eq(schema.wallets.id, wId), eq(schema.wallets.userId, effectiveUserId)));
+      } else if (txType === "income") {
+        const delta = (amt - fee) * multiplier;
+        await db.update(schema.wallets)
+          .set({ balance: sql`balance + ${delta}` })
+          .where(and(eq(schema.wallets.id, wId), eq(schema.wallets.userId, effectiveUserId)));
+      } else if (txType === "transfer" && targetWId) {
+        const sourceDelta = -(amt + fee) * multiplier;
+        const targetDelta = amt * multiplier;
+        await db.update(schema.wallets)
+          .set({ balance: sql`balance + ${sourceDelta}` })
+          .where(and(eq(schema.wallets.id, wId), eq(schema.wallets.userId, effectiveUserId)));
+        await db.update(schema.wallets)
+          .set({ balance: sql`balance + ${targetDelta}` })
+          .where(and(eq(schema.wallets.id, targetWId), eq(schema.wallets.userId, effectiveUserId)));
+      }
+    };
+
     // --- Tool: record_transaction ---
     if (name === "record_transaction") {
-      const { walletId, categoryId, budgetId, amount, type, description, isPlanned, transactionDate } = (args || {}) as any;
+      const { walletId, categoryId, budgetId, amount, adminFee, type, description, isPlanned, transactionDate } = (args || {}) as any;
       
       if (!isValidPositiveNumber(amount)) {
         throw new Error("Validation Error: Transaction 'amount' must be a positive finite number greater than 0");
@@ -822,6 +895,9 @@ export function createMCPServer(
       if (!isValidUUID(categoryId)) {
         throw new Error("Validation Error: Valid string 'categoryId' (UUID) is required");
       }
+      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
+        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
+      }
       if (transactionDate && !isValidDate(transactionDate)) {
         throw new Error("Validation Error: 'transactionDate' must be in ISO format (YYYY-MM-DD)");
       }
@@ -831,6 +907,7 @@ export function createMCPServer(
 
       const cleanWalletId = walletId.trim();
       const cleanCategoryId = categoryId.trim();
+      const cleanAdminFee = isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
       const txType = type === "income" ? "income" : "expense";
 
       const wallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, effectiveUserId))).get();
@@ -861,6 +938,7 @@ export function createMCPServer(
         categoryId: cleanCategoryId,
         budgetId: cleanBudgetId,
         amount,
+        adminFee: cleanAdminFee,
         type: txType,
         description: description ? description.trim() : null,
         isPlanned: isPlannedInt,
@@ -869,22 +947,221 @@ export function createMCPServer(
 
       // Atomic wallet balance update for actual transactions (isPlanned == 0)
       if (!isPlannedInt) {
-        const balanceDelta = txType === "expense" ? -amount : amount;
-        await db.update(schema.wallets)
-          .set({ balance: sql`balance + ${balanceDelta}` })
-          .where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, effectiveUserId)));
+        await applyBalanceDelta(txType, cleanWalletId, null, amount, cleanAdminFee, 1);
       }
 
       return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
     }
 
+    // --- Tool: transfer_funds ---
+    if (name === "transfer_funds") {
+      const { sourceWalletId, targetWalletId, amount, adminFee, categoryId, description, isPlanned, transactionDate } = (args || {}) as any;
+
+      if (!isValidPositiveNumber(amount)) {
+        throw new Error("Validation Error: Transfer 'amount' must be a positive finite number greater than 0");
+      }
+      if (!isValidUUID(sourceWalletId)) {
+        throw new Error("Validation Error: Valid string 'sourceWalletId' (UUID) is required");
+      }
+      if (!isValidUUID(targetWalletId)) {
+        throw new Error("Validation Error: Valid string 'targetWalletId' (UUID) is required");
+      }
+      if (sourceWalletId.trim() === targetWalletId.trim()) {
+        throw new Error("Validation Error: 'sourceWalletId' and 'targetWalletId' cannot be the same wallet");
+      }
+      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
+        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
+      }
+      if (transactionDate && !isValidDate(transactionDate)) {
+        throw new Error("Validation Error: 'transactionDate' must be in ISO format (YYYY-MM-DD)");
+      }
+      if (description && (typeof description !== "string" || description.length > 500)) {
+        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
+      }
+
+      const cleanSourceWalletId = sourceWalletId.trim();
+      const cleanTargetWalletId = targetWalletId.trim();
+      const cleanAdminFee = isValidFiniteNumber(adminFee) && adminFee >= 0 ? adminFee : 0;
+
+      const sourceWallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanSourceWalletId), eq(schema.wallets.userId, effectiveUserId))).get();
+      if (!sourceWallet) throw new Error(`Source Wallet ID ${cleanSourceWalletId} not found or unauthorized`);
+
+      const targetWallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanTargetWalletId), eq(schema.wallets.userId, effectiveUserId))).get();
+      if (!targetWallet) throw new Error(`Target Wallet ID ${cleanTargetWalletId} not found or unauthorized`);
+
+      let cleanCategoryId: string | null = null;
+      if (categoryId && typeof categoryId === "string" && categoryId.trim().length > 0) {
+        if (!isValidUUID(categoryId)) {
+          throw new Error("Validation Error: 'categoryId' must be a valid string (UUID)");
+        }
+        const targetCatId = (categoryId as string).trim();
+        const category = await db.select().from(schema.categories).where(and(eq(schema.categories.id, targetCatId), eq(schema.categories.userId, effectiveUserId))).get();
+        if (!category) throw new Error(`Category ID ${targetCatId} not found or unauthorized`);
+        cleanCategoryId = targetCatId;
+      } else {
+        let transferCat = await db.select().from(schema.categories).where(and(eq(schema.categories.userId, effectiveUserId), eq(schema.categories.name, "Transfer"))).get();
+        if (!transferCat) {
+          const newCatId = crypto.randomUUID();
+          const created = await db.insert(schema.categories).values({
+            id: newCatId,
+            userId: effectiveUserId,
+            name: "Transfer",
+            type: "expense",
+            icon: "🔄"
+          }).returning();
+          transferCat = created[0];
+        }
+        cleanCategoryId = transferCat.id;
+      }
+
+      const dateStr = transactionDate || new Date().toISOString().split("T")[0];
+      const isPlannedInt = isPlanned ? 1 : 0;
+      const newTransactionId = crypto.randomUUID();
+
+      const tx = await db.insert(schema.transactions).values({
+        id: newTransactionId,
+        userId: effectiveUserId,
+        walletId: cleanSourceWalletId,
+        targetWalletId: cleanTargetWalletId,
+        categoryId: cleanCategoryId,
+        amount,
+        adminFee: cleanAdminFee,
+        type: "transfer",
+        description: description ? description.trim() : null,
+        isPlanned: isPlannedInt,
+        transactionDate: dateStr
+      }).returning();
+
+      // Atomic wallet balance update for actual transfer (isPlanned == 0)
+      if (!isPlannedInt) {
+        await applyBalanceDelta("transfer", cleanSourceWalletId, cleanTargetWalletId, amount, cleanAdminFee, 1);
+      }
+
+      return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
+    }
+
+    // --- Tool: update_transaction ---
+    if (name === "update_transaction") {
+      const { transactionId, amount, adminFee, walletId, targetWalletId, categoryId, budgetId, description, transactionDate, isPlanned } = (args || {}) as any;
+
+      if (!isValidUUID(transactionId)) {
+        throw new Error("Validation Error: Valid string 'transactionId' (UUID) is required");
+      }
+      const cleanTxId = transactionId.trim();
+      const existingTx = await db.select().from(schema.transactions).where(and(eq(schema.transactions.id, cleanTxId), eq(schema.transactions.userId, effectiveUserId))).get();
+      if (!existingTx) {
+        throw new Error(`Transaction ID ${cleanTxId} not found or unauthorized`);
+      }
+
+      if (amount !== undefined && !isValidPositiveNumber(amount)) {
+        throw new Error("Validation Error: 'amount' must be a positive finite number greater than 0");
+      }
+      if (adminFee !== undefined && (!isValidFiniteNumber(adminFee) || adminFee < 0)) {
+        throw new Error("Validation Error: 'adminFee' must be a non-negative finite number");
+      }
+      if (transactionDate !== undefined && !isValidDate(transactionDate)) {
+        throw new Error("Validation Error: 'transactionDate' must be in ISO format (YYYY-MM-DD)");
+      }
+      if (description !== undefined && (typeof description !== "string" || description.length > 500)) {
+        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
+      }
+
+      let newWalletId = existingTx.walletId;
+      if (walletId !== undefined) {
+        if (!isValidUUID(walletId)) throw new Error("Validation Error: 'walletId' must be a valid UUID");
+        const cleanWId = (walletId as string).trim();
+        const w = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanWId), eq(schema.wallets.userId, effectiveUserId))).get();
+        if (!w) throw new Error(`Wallet ID ${cleanWId} not found or unauthorized`);
+        newWalletId = cleanWId;
+      }
+
+      let newTargetWalletId = existingTx.targetWalletId;
+      if (targetWalletId !== undefined) {
+        if (targetWalletId === null || targetWalletId === "") {
+          newTargetWalletId = null;
+        } else {
+          if (!isValidUUID(targetWalletId)) throw new Error("Validation Error: 'targetWalletId' must be a valid UUID");
+          const cleanTWId = (targetWalletId as string).trim();
+          const tw = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanTWId), eq(schema.wallets.userId, effectiveUserId))).get();
+          if (!tw) throw new Error(`Target Wallet ID ${cleanTWId} not found or unauthorized`);
+          newTargetWalletId = cleanTWId;
+        }
+      }
+
+      let newCategoryId = existingTx.categoryId;
+      if (categoryId !== undefined) {
+        if (categoryId === null || categoryId === "") {
+          newCategoryId = null;
+        } else {
+          if (!isValidUUID(categoryId)) throw new Error("Validation Error: 'categoryId' must be a valid UUID");
+          const cleanCatId = (categoryId as string).trim();
+          const cat = await db.select().from(schema.categories).where(and(eq(schema.categories.id, cleanCatId), eq(schema.categories.userId, effectiveUserId))).get();
+          if (!cat) throw new Error(`Category ID ${cleanCatId} not found or unauthorized`);
+          newCategoryId = cleanCatId;
+        }
+      }
+
+      let newBudgetId = existingTx.budgetId;
+      if (budgetId !== undefined) {
+        if (budgetId === null || budgetId === "") {
+          newBudgetId = null;
+        } else {
+          if (!isValidUUID(budgetId)) throw new Error("Validation Error: 'budgetId' must be a valid UUID");
+          const cleanBId = (budgetId as string).trim();
+          const b = await db.select().from(schema.budgets).where(and(eq(schema.budgets.id, cleanBId), eq(schema.budgets.userId, effectiveUserId))).get();
+          if (!b) throw new Error(`Budget ID ${cleanBId} not found or unauthorized`);
+          newBudgetId = cleanBId;
+        }
+      }
+
+      const newAmount = amount !== undefined ? amount : existingTx.amount;
+      const newAdminFee = adminFee !== undefined ? adminFee : existingTx.adminFee;
+      const newIsPlannedInt = isPlanned !== undefined ? (isPlanned ? 1 : 0) : existingTx.isPlanned;
+
+      // -----------------------------------------------------------------------
+      // Atomic Balance Reconciliation
+      // -----------------------------------------------------------------------
+      // 1. Revert previous transaction impact if it was an actual transaction
+      if (existingTx.isPlanned === 0) {
+        await applyBalanceDelta(existingTx.type, existingTx.walletId, existingTx.targetWalletId, existingTx.amount, existingTx.adminFee, -1);
+      }
+
+      // 2. Apply new transaction impact if the updated transaction is an actual transaction
+      if (newIsPlannedInt === 0) {
+        await applyBalanceDelta(existingTx.type, newWalletId, newTargetWalletId, newAmount, newAdminFee, 1);
+      }
+
+      const updates: any = {
+        amount: newAmount,
+        adminFee: newAdminFee,
+        walletId: newWalletId,
+        targetWalletId: newTargetWalletId,
+        categoryId: newCategoryId,
+        budgetId: newBudgetId,
+        isPlanned: newIsPlannedInt
+      };
+
+      if (description !== undefined) updates.description = description ? description.trim() : null;
+      if (transactionDate !== undefined) updates.transactionDate = transactionDate;
+
+      const updated = await db.update(schema.transactions)
+        .set(updates)
+        .where(and(eq(schema.transactions.id, cleanTxId), eq(schema.transactions.userId, effectiveUserId)))
+        .returning();
+
+      return { content: [{ type: "text", text: JSON.stringify(updated[0], null, 2) }] };
+    }
+
     // --- Tool: list_transactions ---
     if (name === "list_transactions") {
-      const { walletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit = 50, offset = 0 } = (args || {}) as any;
+      const { walletId, targetWalletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit = 50, offset = 0 } = (args || {}) as any;
       const conditions = [eq(schema.transactions.userId, effectiveUserId)];
       
       if (walletId !== undefined && typeof walletId === "string" && walletId.trim() !== "") {
         conditions.push(eq(schema.transactions.walletId, walletId.trim()));
+      }
+      if (targetWalletId !== undefined && typeof targetWalletId === "string" && targetWalletId.trim() !== "") {
+        conditions.push(eq(schema.transactions.targetWalletId, targetWalletId.trim()));
       }
       if (categoryId !== undefined && typeof categoryId === "string" && categoryId.trim() !== "") {
         conditions.push(eq(schema.transactions.categoryId, categoryId.trim()));
@@ -892,7 +1169,7 @@ export function createMCPServer(
       if (budgetId !== undefined && typeof budgetId === "string" && budgetId.trim() !== "") {
         conditions.push(eq(schema.transactions.budgetId, budgetId.trim()));
       }
-      if (type !== undefined && (type === "expense" || type === "income")) {
+      if (type !== undefined && (type === "expense" || type === "income" || type === "transfer")) {
         conditions.push(eq(schema.transactions.type, type));
       }
       if (isPlanned !== undefined) {
@@ -950,14 +1227,28 @@ export function createMCPServer(
 
       let totalIncome = 0;
       let totalExpense = 0;
+      let totalAdminFees = 0;
+      let transfersCount = 0;
       const categoryBreakdown: Record<string, number> = {};
 
       for (const tx of txs) {
-        if (tx.type === "income") totalIncome += tx.amount;
-        if (tx.type === "expense") {
-          totalExpense += tx.amount;
-          const catName = categoryMap.get(tx.categoryId) || `Category #${tx.categoryId}`;
-          categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + tx.amount).toFixed(2));
+        const fee = tx.adminFee || 0;
+        totalAdminFees += fee;
+
+        if (tx.type === "income") {
+          totalIncome += (tx.amount - fee);
+        } else if (tx.type === "expense") {
+          const totalCost = tx.amount + fee;
+          totalExpense += totalCost;
+          const catName = tx.categoryId ? (categoryMap.get(tx.categoryId) || `Category #${tx.categoryId}`) : "Uncategorized";
+          categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + totalCost).toFixed(2));
+        } else if (tx.type === "transfer") {
+          transfersCount += 1;
+          if (fee > 0) {
+            totalExpense += fee;
+            const catName = tx.categoryId ? (categoryMap.get(tx.categoryId) || `Category #${tx.categoryId}`) : "Transfer Fees";
+            categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + fee).toFixed(2));
+          }
         }
       }
 
@@ -965,9 +1256,11 @@ export function createMCPServer(
         netWorthByCurrency,
         totalIncome: Number(totalIncome.toFixed(2)),
         totalExpense: Number(totalExpense.toFixed(2)),
+        totalAdminFees: Number(totalAdminFees.toFixed(2)),
         netSavings: Number((totalIncome - totalExpense).toFixed(2)),
         walletsCount: walletsData.length,
         transactionsCount: txs.length,
+        transfersCount,
         categoryBreakdown
       };
 

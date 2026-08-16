@@ -73,12 +73,14 @@ export const transactions = sqliteTable("transactions", {
   walletId: text("wallet_id")
     .notNull()
     .references(() => wallets.id, { onDelete: "cascade" }),
+  targetWalletId: text("target_wallet_id")
+    .references(() => wallets.id, { onDelete: "set null" }),
   categoryId: text("category_id")
-    .notNull()
-    .references(() => categories.id, { onDelete: "cascade" }),
+    .references(() => categories.id, { onDelete: "set null" }),
   budgetId: text("budget_id").references(() => budgets.id, { onDelete: "set null" }),
   amount: real("amount").notNull(),
-  type: text("type").notNull().default("expense"),
+  adminFee: real("admin_fee").notNull().default(0.0),
+  type: text("type").notNull().default("expense"), // "expense" | "income" | "transfer"
   description: text("description"),
   isPlanned: integer("is_planned").notNull().default(0), // 0 or 1
   transactionDate: text("transaction_date").notNull(),
@@ -88,6 +90,7 @@ export const transactions = sqliteTable("transactions", {
 }, (table) => [
   index("transactions_user_date_idx").on(table.userId, table.transactionDate),
   index("transactions_wallet_id_idx").on(table.walletId),
+  index("transactions_target_wallet_id_idx").on(table.targetWalletId),
   index("transactions_category_id_idx").on(table.categoryId),
   index("transactions_budget_id_idx").on(table.budgetId),
 ]);

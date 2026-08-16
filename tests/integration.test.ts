@@ -402,6 +402,53 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   });
 
   // -------------------------------------------------------------------------
+  // Step 20.5: Transfer Funds & Update Transaction Flow
+  // -------------------------------------------------------------------------
+  it('Step 20.5: Transfer Funds & Update Transaction (transfer_funds & update_transaction)', async () => {
+    // 1. Transfer Rp 1,000,000 from BCA to GoPay with Rp 2,500 admin fee
+    const transfer = await callTool('transfer_funds', {
+      sourceWalletId: state.wallets.bca.id,
+      targetWalletId: state.wallets.gopay.id,
+      amount: 1000000,
+      adminFee: 2500,
+      description: 'Transfer BCA to GoPay',
+    }, state.userA.token);
+
+    assert.equal(transfer.type, 'transfer');
+    assert.equal(transfer.amount, 1000000);
+    assert.equal(transfer.adminFee, 2500);
+
+    // Verify wallets updated:
+    // BCA was 26,850,000 -> 26,850,000 - 1,002,500 = 25,847,500
+    // GoPay was 475,000 -> 475,000 + 1,000,000 = 1,475,000
+    const walletsAfterTransfer = await callTool('manage_wallet', { action: 'list' }, state.userA.token);
+    const bcaW = walletsAfterTransfer.find((w: any) => w.id === state.wallets.bca.id);
+    const gopayW = walletsAfterTransfer.find((w: any) => w.id === state.wallets.gopay.id);
+    assert.equal(bcaW.balance, 25847500);
+    assert.equal(gopayW.balance, 1475000);
+
+    // 2. Update Transaction: Change memo and update transfer amount to 500,000
+    const updatedTransfer = await callTool('update_transaction', {
+      transactionId: transfer.id,
+      amount: 500000,
+      description: 'Revised Topup GoPay',
+    }, state.userA.token);
+    assert.equal(updatedTransfer.amount, 500000);
+    assert.equal(updatedTransfer.description, 'Revised Topup GoPay');
+
+    // Verify atomic balance reconciliation:
+    // BCA gets 500,000 back -> 25,847,500 + 500,000 = 26,347,500
+    // GoPay loses 500,000 -> 1,475,000 - 500,000 = 975,000
+    const walletsAfterUpdate = await callTool('manage_wallet', { action: 'list' }, state.userA.token);
+    const bcaW2 = walletsAfterUpdate.find((w: any) => w.id === state.wallets.bca.id);
+    const gopayW2 = walletsAfterUpdate.find((w: any) => w.id === state.wallets.gopay.id);
+    assert.equal(bcaW2.balance, 26347500);
+    assert.equal(gopayW2.balance, 975000);
+
+    console.log(`    ✓ Transfer Funds & Atomic Update: BCA Rp ${bcaW2.balance.toLocaleString()}, GoPay Rp ${gopayW2.balance.toLocaleString()}`);
+  });
+
+  // -------------------------------------------------------------------------
   // Step 21-23: Read MCP Resources
   // -------------------------------------------------------------------------
   it('Step 21-23: Read MCP Resources', async () => {

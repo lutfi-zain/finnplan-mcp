@@ -273,14 +273,16 @@ Once authenticated, prompt your coding agent with natural language:
 - *"Create a monthly budget of IDR 3,000,000 for the Groceries category for August 2026."*
 - *"Check the current utilization and remaining limit of my active budgets."*
 
-#### 💳 Transactions & Planning
-- *"Record an expense of IDR 250,000 from BCA Main for Groceries note 'Supermarket run'."*
+#### 💳 Transactions, Transfers & Planning
+- *"Record an expense of IDR 250,000 from BCA Main for Groceries with admin fee IDR 2,500 note 'Supermarket run'."*
 - *"Record an income of IDR 12,000,000 to BCA Main for Freelance."*
+- *"Transfer IDR 500,000 from BCA Main to GoPay with admin fee IDR 2,500 for 'Weekly digital wallet topup'."*
+- *"Update the last transaction: change the amount to IDR 350,000 and update note to 'Resto family dinner'."*
 - *"Add a planned expense of IDR 1,500,000 for Flight tickets scheduled next week."*
-- *"List all my transactions for this month sorted by date."*
+- *"List all my transactions for this month sorted by date (or filter by transfers only)."*
 
 #### 📈 Financial Summaries & Net Worth
-- *"Give me a complete financial summary: my net worth across all currencies, total savings, and breakdown by expense category."*
+- *"Give me a complete financial summary: my net worth across all currencies, total savings, total admin fees paid, and breakdown by expense category."*
 
 #### 💬 Feedback & Feature Requests (GitHub Issues)
 - *"Kirim feedback: Tolong tambahkan export CSV dan Excel untuk riwayat transaksi"*

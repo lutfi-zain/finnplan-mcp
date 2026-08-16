@@ -10,16 +10,18 @@ Stateless Model Context Protocol (MCP) server for personal finance management de
 - **Pure MCP-Native Authentication**: Register and login directly using MCP tools (`register_user` & `login_user`) without external REST endpoints.
 - **15-Minute Self-Contained JWT**: Cryptographic token verification with **zero database queries** required for auth on finance tool calls.
 - **Multi-Tenant Row-Level Security (RLS)**: Automatically isolates user data via `userId` extracted directly from JWT token payload.
-- **9 MCP Tools**:
+- **11 MCP Tools**:
   - `register_user`: Register with `firstName`, `lastName`, `email`, and `whatsappNumber` (with country code `+...`) → returns persistent `apiKey` & 15-minute JWT.
   - `login_user`: Authenticate with `apiKey` → returns fresh 15-minute JWT.
   - `submit_feedback`: Submit user feedback, bug reports, or feature requests → automatically creates a formatted GitHub Issue with the user's name and email.
   - `manage_wallet`: Create, list, update wallets.
   - `manage_category`: Create, list expense and income categories.
   - `manage_budget`: Create, list, and compute real-time budget utilization status.
-  - `record_transaction`: Record income/expenses with automatic wallet balance sync (and support for planned transactions).
+  - `record_transaction`: Record income/expenses with optional admin fee and automatic atomic wallet balance sync.
+  - `transfer_funds`: Transfer money between wallets with optional admin fees and atomic dual-wallet balance adjustment.
+  - `update_transaction`: Update transactions (amount, fee, wallet, category, budget, date, memo, planned status) with automatic balance reconciliation.
   - `list_transactions`: Dynamic filtering across date ranges, wallets, categories, budgets, and planning status.
-  - `financial_summary`: Aggregate net worth, income, expense, savings, and category breakdowns.
+  - `financial_summary`: Aggregate net worth, income, expense, savings, admin fees, and category breakdowns.
 - **3 MCP Resources**:
   - `finance://db/schema`
   - `finance://wallets/list`
