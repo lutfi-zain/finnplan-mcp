@@ -1,0 +1,31 @@
+{
+  "name": "finnplan-mcp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run",
+    "test": "tsx --test tests/mcp.test.ts",
+    "token:create": "tsx scripts/generate-token.ts",
+    "db:generate": "drizzle-kit generate"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.13.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260811.1",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.120.1"
+  }
+}

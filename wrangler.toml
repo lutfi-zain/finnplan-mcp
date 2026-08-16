@@ -1,0 +1,13 @@
+name = "finnplan-mcp"
+main = "src/index.ts"
+compatibility_date = "2024-03-20"
+
+# Optional: define dev vars (in production, use: wrangler secret put JWT_SECRET)
+[vars]
+JWT_SECRET = "finnplan-mcp-dev-super-secret-key-change-in-prod"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "finance_db"
+database_id = "xxxx-xxxx-xxxx-xxxx"
+migrations_dir = "drizzle"
