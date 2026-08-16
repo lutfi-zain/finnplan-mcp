@@ -9,11 +9,14 @@
     "typecheck": "tsc --noEmit",
     "build": "wrangler deploy --dry-run",
     "test": "tsx --test tests/mcp.test.ts",
+    "test:local": "bash scripts/run-local-integration.sh",
+    "test:remote": "bash scripts/run-integration.sh",
+    "test:integration": "bash scripts/run-integration.sh",
+    "test:all": "npm test && npm run test:local && npm run test:remote",
     "token:create": "tsx scripts/generate-token.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql",
-    "db:migrate:remote": "wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql",
-    "test:integration": "bash scripts/run-integration.sh"
+    "db:migrate:remote": "wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql"
   },
   "keywords": [
     "mcp",
