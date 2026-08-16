@@ -36,11 +36,15 @@ WORKER_URL="${WORKER_URL}" JWT_SECRET="${JWT_SECRET}" npx tsx --test tests/integ
 TEST_EXIT=$?
 echo ""
 
-# 5. Cleanup test data from remote D1
-echo "🧹 Cleaning up test data from remote D1..."
-npx wrangler d1 execute finance_db --remote --yes \
-  --command="DELETE FROM transactions WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM budgets WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM categories WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM wallets WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM users WHERE id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour');" 2>/dev/null || true
-echo "✅ Test data cleaned up."
+# 5. Cleanup test data from remote D1 (unless KEEP_DATA=1)
+if [ "$KEEP_DATA" = "1" ]; then
+  echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in D1."
+else
+  echo "🧹 Cleaning up test data from remote D1..."
+  npx wrangler d1 execute finance_db --remote --yes \
+    --command="DELETE FROM transactions WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM budgets WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM categories WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM wallets WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM users WHERE id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour');" 2>/dev/null || true
+  echo "✅ Test data cleaned up."
+fi
 echo ""
 
 if [ $TEST_EXIT -eq 0 ]; then

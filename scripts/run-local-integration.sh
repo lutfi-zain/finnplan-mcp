@@ -55,10 +55,14 @@ WORKER_URL="${LOCAL_URL}" JWT_SECRET="${DEV_SECRET}" npx tsx --test tests/integr
 TEST_EXIT=$?
 echo ""
 
-# 5. Cleanup test data from local D1
-echo "🧹 Cleaning up test data from local D1..."
-npx wrangler d1 execute finance_db --local \
-  --command="DELETE FROM transactions WHERE user_id LIKE 'usr_inttest_%'; DELETE FROM budgets WHERE user_id LIKE 'usr_inttest_%'; DELETE FROM categories WHERE user_id LIKE 'usr_inttest_%'; DELETE FROM wallets WHERE user_id LIKE 'usr_inttest_%'; DELETE FROM users WHERE id LIKE 'usr_inttest_%';" > /dev/null 2>&1 || true
+# 5. Cleanup test data from local D1 (unless KEEP_DATA=1)
+if [ "$KEEP_DATA" = "1" ]; then
+  echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in Local D1."
+else
+  echo "🧹 Cleaning up test data from local D1..."
+  npx wrangler d1 execute finance_db --local \
+    --command="DELETE FROM transactions WHERE user_id LIKE 'usr_%'; DELETE FROM budgets WHERE user_id LIKE 'usr_%'; DELETE FROM categories WHERE user_id LIKE 'usr_%'; DELETE FROM wallets WHERE user_id LIKE 'usr_%'; DELETE FROM users WHERE id LIKE 'usr_%';" > /dev/null 2>&1 || true
+fi
 
 if [ $TEST_EXIT -eq 0 ]; then
   echo "╔════════════════════════════════════════════════════════════╗"

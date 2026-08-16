@@ -16,7 +16,10 @@
     "token:create": "tsx scripts/generate-token.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql",
-    "db:migrate:remote": "wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql"
+    "db:migrate:remote": "wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql",
+    "db:seed": "tsx scripts/seed-data.ts",
+    "db:seed:remote": "WORKER_URL=https://finnplan-mcp.lutfidmz.workers.dev tsx scripts/seed-data.ts",
+    "db:seed:local": "WORKER_URL=http://localhost:8787 tsx scripts/seed-data.ts"
   },
   "keywords": [
     "mcp",
