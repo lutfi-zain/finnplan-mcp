@@ -83,7 +83,7 @@ class MockD1PreparedStatement {
 
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
-  const ddlPath = join(__dirname, '../drizzle/0000_remarkable_quasar.sql');
+  const ddlPath = join(__dirname, '../drizzle/0000_nice_marvel_boy.sql');
   const ddl = readFileSync(ddlPath, 'utf-8');
   const statements = ddl.split('--> statement-breakpoint');
   for (const statement of statements) {
@@ -129,7 +129,7 @@ async function readResource(server: any, uri: string) {
 // -----------------------------------------------------------------------------
 // Test Suite
 // -----------------------------------------------------------------------------
-describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () => {
+describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => {
   it('1. Validation Helpers (Email, WhatsApp, SHA-256 API Key Hashing)', async () => {
     // Email tests
     assert.equal(isValidEmail('user@example.com'), true);
@@ -258,7 +258,7 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
     assert.equal(verified?.userId, userId);
   });
 
-  it('4. Robust Number & NaN Validations', async () => {
+  it('4. Robust Number, NaN, and UUID Validations', async () => {
     const { db } = createTestDB();
     const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
     const regRes = await callTool(publicServer, 'register_user', {
@@ -276,11 +276,17 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
       balance: 1000000,
     })).content[0].text);
 
+    assert.equal(typeof wallet.id, 'string', 'Wallet ID must be a string UUID');
+    assert.equal(wallet.id.length, 36, 'Wallet ID must be 36 characters (UUID v4)');
+
     const category = JSON.parse((await callTool(authServer, 'manage_category', {
       action: 'create',
       name: 'Food',
       type: 'expense',
     })).content[0].text);
+
+    assert.equal(typeof category.id, 'string', 'Category ID must be a string UUID');
+    assert.equal(category.id.length, 36, 'Category ID must be 36 characters (UUID v4)');
 
     // NaN amount rejection in record_transaction
     await assert.rejects(async () => {
@@ -323,7 +329,7 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
     }, /periodStart.*after.*periodEnd/i);
   });
 
-  it('5. Atomic Balance Updates, Budget Status Logic, Multi-Currency Summary & Offset Pagination', async () => {
+  it('5. Atomic Balance Updates, UUID Keys, Budget Status Logic, Multi-Currency Summary & Offset Pagination', async () => {
     const { db } = createTestDB();
     const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
 
@@ -336,13 +342,14 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
     const { userId } = JSON.parse(regRes.content[0].text);
     const authServer = createMCPServer(db, userId, TEST_JWT_SECRET);
 
-    // 1. Create IDR and USD wallets
+    // 1. Create IDR and USD wallets (UUID generated)
     const wBca = JSON.parse((await callTool(authServer, 'manage_wallet', {
       action: 'create',
       name: 'BCA Main',
       balance: 10000000,
       currency: 'IDR',
     })).content[0].text);
+    assert.equal(typeof wBca.id, 'string');
 
     const wUsd = JSON.parse((await callTool(authServer, 'manage_wallet', {
       action: 'create',
@@ -350,6 +357,7 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
       balance: 500,
       currency: 'USD',
     })).content[0].text);
+    assert.equal(typeof wUsd.id, 'string');
 
     // 2. Create Categories
     const cFood = JSON.parse((await callTool(authServer, 'manage_category', {
@@ -357,12 +365,14 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
       name: 'Food',
       type: 'expense',
     })).content[0].text);
+    assert.equal(typeof cFood.id, 'string');
 
     const cSalary = JSON.parse((await callTool(authServer, 'manage_category', {
       action: 'create',
       name: 'Salary',
       type: 'income',
     })).content[0].text);
+    assert.equal(typeof cSalary.id, 'string');
 
     // 3. Create Budget for Food
     const bAugust = JSON.parse((await callTool(authServer, 'manage_budget', {
@@ -373,16 +383,18 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
       periodStart: '2026-08-01',
       periodEnd: '2026-08-31',
     })).content[0].text);
+    assert.equal(typeof bAugust.id, 'string');
 
     // 4. Record Expense (Food: Rp 500K) -> updates balance atomically
-    await callTool(authServer, 'record_transaction', {
+    const tx1 = JSON.parse((await callTool(authServer, 'record_transaction', {
       walletId: wBca.id,
       categoryId: cFood.id,
       budgetId: bAugust.id,
       amount: 500000,
       type: 'expense',
       transactionDate: '2026-08-10',
-    });
+    })).content[0].text);
+    assert.equal(typeof tx1.id, 'string');
 
     // 5. Record Income into Food category (e.g. cashback) -> must NOT count towards budget spending!
     await callTool(authServer, 'record_transaction', {
@@ -476,7 +488,8 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
 
     const schemaRes = await readResource(authServer, 'finance://db/schema');
     const schemaJson = JSON.parse(schemaRes.contents[0].text);
-    assert.ok(schemaJson.tables.users.includes('api_key_hash (UNIQUE)'));
+    assert.ok(schemaJson.tables.users.includes('id (PK UUID)'));
+    assert.ok(schemaJson.tables.wallets.includes('id (PK UUID)'));
     assert.ok(schemaJson.indexes.transactions);
   });
 
@@ -550,5 +563,6 @@ describe('Eve Finance MCP Server - Hardened Security & Best Practice Suite', () 
     const createdWallet = JSON.parse((await createWalletRes.json()).result.content[0].text);
     assert.equal(createdWallet.name, 'E2E Bank');
     assert.equal(createdWallet.balance, 5000000);
+    assert.equal(typeof createdWallet.id, 'string', 'Wallet ID should be a string UUID');
   });
 });

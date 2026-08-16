@@ -2,7 +2,7 @@ import { sql } from "drizzle-orm";
 import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
-  id: text("id").primaryKey(), // usr_...
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()), // usr_... or UUID
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email").notNull().unique(),
@@ -17,7 +17,7 @@ export const users = sqliteTable("users", {
 ]);
 
 export const wallets = sqliteTable("wallets", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
@@ -33,7 +33,7 @@ export const wallets = sqliteTable("wallets", {
 ]);
 
 export const categories = sqliteTable("categories", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
@@ -48,12 +48,12 @@ export const categories = sqliteTable("categories", {
 ]);
 
 export const budgets = sqliteTable("budgets", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  categoryId: integer("category_id").references(() => categories.id, { onDelete: "set null" }),
+  categoryId: text("category_id").references(() => categories.id, { onDelete: "set null" }),
   amount: real("amount").notNull(),
   periodStart: text("period_start").notNull(),
   periodEnd: text("period_end").notNull(),
@@ -66,17 +66,17 @@ export const budgets = sqliteTable("budgets", {
 ]);
 
 export const transactions = sqliteTable("transactions", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
-  walletId: integer("wallet_id")
+  walletId: text("wallet_id")
     .notNull()
     .references(() => wallets.id, { onDelete: "restrict" }),
-  categoryId: integer("category_id")
+  categoryId: text("category_id")
     .notNull()
     .references(() => categories.id, { onDelete: "restrict" }),
-  budgetId: integer("budget_id").references(() => budgets.id, { onDelete: "set null" }),
+  budgetId: text("budget_id").references(() => budgets.id, { onDelete: "set null" }),
   amount: real("amount").notNull(),
   type: text("type").notNull().default("expense"),
   description: text("description"),

@@ -1,8 +1,8 @@
 CREATE TABLE `budgets` (
-	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
-	`category_id` integer,
+	`category_id` text,
 	`amount` real NOT NULL,
 	`period_start` text NOT NULL,
 	`period_end` text NOT NULL,
@@ -14,7 +14,7 @@ CREATE TABLE `budgets` (
 CREATE INDEX `budgets_user_period_idx` ON `budgets` (`user_id`,`period_start`,`period_end`);--> statement-breakpoint
 CREATE INDEX `budgets_category_id_idx` ON `budgets` (`category_id`);--> statement-breakpoint
 CREATE TABLE `categories` (
-	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
 	`type` text DEFAULT 'expense' NOT NULL,
@@ -25,11 +25,11 @@ CREATE TABLE `categories` (
 --> statement-breakpoint
 CREATE INDEX `categories_user_id_idx` ON `categories` (`user_id`);--> statement-breakpoint
 CREATE TABLE `transactions` (
-	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
-	`wallet_id` integer NOT NULL,
-	`category_id` integer NOT NULL,
-	`budget_id` integer,
+	`wallet_id` text NOT NULL,
+	`category_id` text NOT NULL,
+	`budget_id` text,
 	`amount` real NOT NULL,
 	`type` text DEFAULT 'expense' NOT NULL,
 	`description` text,
@@ -61,7 +61,7 @@ CREATE UNIQUE INDEX `users_api_key_hash_unique` ON `users` (`api_key_hash`);--> 
 CREATE UNIQUE INDEX `users_email_idx` ON `users` (`email`);--> statement-breakpoint
 CREATE UNIQUE INDEX `users_api_key_hash_idx` ON `users` (`api_key_hash`);--> statement-breakpoint
 CREATE TABLE `wallets` (
-	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,
 	`name` text NOT NULL,
 	`type` text DEFAULT 'bank' NOT NULL,
