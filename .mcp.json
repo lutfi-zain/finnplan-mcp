@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "eve-finance": {
+      "type": "http",
+      "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp"
+    }
+  }
+}
