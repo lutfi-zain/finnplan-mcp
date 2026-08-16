@@ -282,6 +282,11 @@ Once authenticated, prompt your coding agent with natural language:
 #### 📈 Financial Summaries & Net Worth
 - *"Give me a complete financial summary: my net worth across all currencies, total savings, and breakdown by expense category."*
 
+#### 💬 Feedback & Feature Requests (GitHub Issues)
+- *"Kirim feedback: Tolong tambahkan export CSV dan Excel untuk riwayat transaksi"*
+- *"Laporkan bug: Saldo di dompet saya tidak berkurang setelah transaksi dicatat"*
+- *"Ajukan feature request: Integrasi notifikasi WhatsApp harian untuk pengingat budget"*
+
 ---
 
 ## ⚡ CLI Snippet Helper

@@ -753,4 +753,111 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
       });
     }, /Unauthorized/i);
   });
+
+  it('11. Submit Feedback to GitHub Issues with Auto Submitter Details', async () => {
+    const { db } = createTestDB();
+
+    // Mock fetch to simulate GitHub API
+    let capturedRequest: any = null;
+    const mockFetch = async (url: any, init?: any) => {
+      capturedRequest = { url, ...init, body: JSON.parse(init?.body || '{}') };
+      return new Response(
+        JSON.stringify({
+          html_url: 'https://github.com/lutfi-zain/finnplan-mcp/issues/42',
+          number: 42,
+          state: 'open',
+          title: capturedRequest.body.title,
+        }),
+        { status: 201, headers: { 'Content-Type': 'application/json' } }
+      );
+    };
+
+    // 1. Authenticated User Feedback Submission (Auto-resolves Name & Email from DB)
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const regRes = await callTool(publicServer, 'register_user', {
+      firstName: 'Budi',
+      lastName: 'Santoso',
+      email: 'budi.santoso@example.com',
+      whatsappNumber: '+628123456789',
+    });
+    const { userId, apiKey } = JSON.parse(regRes.content[0].text);
+
+    const authServer = createMCPServer(db, userId, TEST_JWT_SECRET, {
+      githubToken: 'ghp_mock_token_12345',
+      githubRepo: 'lutfi-zain/finnplan-mcp',
+      fetchFn: mockFetch as any,
+    });
+
+    const authFeedbackRes = await callTool(authServer, 'submit_feedback', {
+      title: 'Tolong tambahkan export CSV',
+      feedback: 'Aplikasi ini sangat bagus. Mohon tambahkan fitur export riwayat transaksi ke CSV atau Excel.',
+      type: 'feature_request',
+    });
+
+    const authFeedback = JSON.parse(authFeedbackRes.content[0].text);
+    assert.equal(authFeedback.success, true);
+    assert.equal(authFeedback.issueUrl, 'https://github.com/lutfi-zain/finnplan-mcp/issues/42');
+    assert.equal(authFeedback.issueNumber, 42);
+    assert.equal(authFeedback.submitter.name, 'Budi Santoso');
+    assert.equal(authFeedback.submitter.email, 'budi.santoso@example.com');
+    assert.equal(authFeedback.submitter.userId, userId);
+
+    assert.equal(capturedRequest.url, 'https://api.github.com/repos/lutfi-zain/finnplan-mcp/issues');
+    assert.equal(capturedRequest.headers.Authorization, 'Bearer ghp_mock_token_12345');
+    assert.ok(capturedRequest.body.title.includes('[FEATURE REQUEST] Tolong tambahkan export CSV'));
+    assert.ok(capturedRequest.body.body.includes('Budi Santoso'));
+    assert.ok(capturedRequest.body.body.includes('budi.santoso@example.com'));
+    assert.ok(capturedRequest.body.body.includes(userId));
+
+    // 2. In-Tool Auth Submission (Passing apiKey in arguments)
+    const unauthServer = createMCPServer(db, null, TEST_JWT_SECRET, {
+      githubToken: 'ghp_mock_token_12345',
+      githubRepo: 'lutfi-zain/finnplan-mcp',
+      fetchFn: mockFetch as any,
+    });
+
+    const inToolFeedbackRes = await callTool(unauthServer, 'submit_feedback', {
+      title: 'Bug: Transaksi ganda di UI',
+      feedback: 'Saya menemukan duplikasi tampilan transaksi saat jaringan lambat.',
+      type: 'bug',
+      apiKey,
+    });
+    const inToolFeedback = JSON.parse(inToolFeedbackRes.content[0].text);
+    assert.equal(inToolFeedback.success, true);
+    assert.equal(inToolFeedback.submitter.name, 'Budi Santoso');
+    assert.equal(inToolFeedback.submitter.email, 'budi.santoso@example.com');
+
+    // 3. Unauthenticated Guest Feedback with Explicit Name & Email
+    const guestFeedbackRes = await callTool(unauthServer, 'submit_feedback', {
+      title: 'Pertanyaan seputar keamanan',
+      feedback: 'Apakah data keuangan dienkripsi dengan standar industri?',
+      type: 'question',
+      name: 'Guest Inquirer',
+      email: 'guest@example.com',
+    });
+    const guestFeedback = JSON.parse(guestFeedbackRes.content[0].text);
+    assert.equal(guestFeedback.success, true);
+    assert.equal(guestFeedback.submitter.name, 'Guest Inquirer');
+    assert.equal(guestFeedback.submitter.email, 'guest@example.com');
+    assert.equal(guestFeedback.submitter.userId, null);
+
+    // 4. Unauthenticated without Name/Email -> Throws Validation Error
+    await assert.rejects(async () => {
+      await callTool(unauthServer, 'submit_feedback', {
+        title: 'Feedback tanpa identitas',
+        feedback: 'Harusnya ini gagal karena tidak ada identitas submitter.',
+      });
+    }, /Submitter 'name' is required when unauthenticated/i);
+
+    // 5. Missing GitHub Token -> Throws Server Error
+    const noTokenServer = createMCPServer(db, userId, TEST_JWT_SECRET, {
+      fetchFn: mockFetch as any,
+    });
+    await assert.rejects(async () => {
+      await callTool(noTokenServer, 'submit_feedback', {
+        title: 'Harusnya gagal token',
+        feedback: 'Server tidak memiliki token github.',
+      });
+    }, /Missing GITHUB_TOKEN environment secret/i);
+  });
 });

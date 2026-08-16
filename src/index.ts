@@ -9,6 +9,8 @@ import { verifyUserToken, hashApiKey } from './utils/token';
 type Bindings = {
   DB: D1Database;
   JWT_SECRET: string;
+  GITHUB_TOKEN?: string;
+  GITHUB_REPO?: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -152,7 +154,10 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
     enableJsonResponse: true,
   });
 
-  const mcpServer = createMCPServer(db, userId, secret);
+  const mcpServer = createMCPServer(db, userId, secret, {
+    githubToken: c.env?.GITHUB_TOKEN,
+    githubRepo: c.env?.GITHUB_REPO || 'lutfi-zain/finnplan-mcp',
+  });
   await mcpServer.connect(transport);
 
   // Normalize Request headers for maximum compatibility across various MCP clients

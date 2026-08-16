@@ -39,10 +39,55 @@ function isValidUUID(id: any): boolean {
   return typeof id === "string" && id.trim().length > 0;
 }
 
+export type MCPOptions = {
+  githubToken?: string;
+  githubRepo?: string;
+  fetchFn?: typeof fetch;
+};
+
+async function createGithubIssue(opts: {
+  token: string;
+  repo: string;
+  title: string;
+  body: string;
+  labels?: string[];
+  fetchFn?: typeof fetch;
+}): Promise<{ issueUrl: string; issueNumber: number }> {
+  const fetchImpl = opts.fetchFn || fetch;
+  const url = `https://api.github.com/repos/${opts.repo}/issues`;
+  const response = await fetchImpl(url, {
+    method: "POST",
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Authorization": `Bearer ${opts.token}`,
+      "User-Agent": "Eve-Finance-MCP-Server",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      title: opts.title,
+      body: opts.body,
+      labels: opts.labels || ["feedback", "user-submitted"]
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`GitHub API error (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as any;
+  return {
+    issueUrl: data.html_url || `https://github.com/${opts.repo}/issues/${data.number}`,
+    issueNumber: data.number
+  };
+}
+
 export function createMCPServer(
   db: DrizzleD1Database<typeof schema>,
   userId: string | null,
-  jwtSecret: string
+  jwtSecret: string,
+  options?: MCPOptions
 ) {
   if (!jwtSecret || typeof jwtSecret !== "string" || jwtSecret.trim() === "") {
     throw new Error("Server configuration error: JWT_SECRET is required to initialize MCP server");
@@ -252,6 +297,28 @@ export function createMCPServer(
           required: ["apiKey"]
         }
       },
+      // Feedback & Support Tool
+      {
+        name: "submit_feedback",
+        description: "Submit user feedback, feature request, question, or bug report. Automatically creates a GitHub issue in the repository and logs the submitter's name, email, and timestamp.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Short summary of feedback or issue (5-200 characters)" },
+            feedback: { type: "string", description: "Detailed feedback, bug description, or feature request (10-4000 characters)" },
+            type: {
+              type: "string",
+              enum: ["feedback", "bug", "feature_request", "question"],
+              default: "feedback",
+              description: "Category of feedback: feedback, bug, feature_request, or question"
+            },
+            name: { type: "string", description: "Optional: Submitter's full name (auto-resolved from profile if authenticated)" },
+            email: { type: "string", description: "Optional: Submitter's email address (auto-resolved from profile if authenticated)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
+          },
+          required: ["title", "feedback"]
+        }
+      },
       // Finance Tools (Authenticated with Persistent API Key or JWT)
       {
         name: "record_transaction",
@@ -457,6 +524,102 @@ export function createMCPServer(
       };
 
       return { content: [{ type: "text", text: JSON.stringify(responsePayload, null, 2) }] };
+    }
+
+    // --- Tool: submit_feedback ---
+    if (name === "submit_feedback") {
+      const { title, feedback, type = "feedback", name: submitterName, email: submitterEmail } = (args || {}) as any;
+
+      if (!title || typeof title !== "string" || title.trim().length < 5 || title.trim().length > 200) {
+        throw new Error("Validation Error: 'title' is required (5-200 characters)");
+      }
+      if (!feedback || typeof feedback !== "string" || feedback.trim().length < 10 || feedback.trim().length > 4000) {
+        throw new Error("Validation Error: 'feedback' is required (10-4000 characters)");
+      }
+
+      // Resolve user profile: Check if user is authenticated via headers or in-tool apiKey
+      let foundUserId: string | null = null;
+      let userName = submitterName && typeof submitterName === "string" && submitterName.trim().length > 0 ? submitterName.trim() : null;
+      let userEmail = submitterEmail && typeof submitterEmail === "string" && submitterEmail.trim().length > 0 ? submitterEmail.trim().toLowerCase() : null;
+
+      const effectiveUserId = await resolveEffectiveUserId(args);
+      if (effectiveUserId) {
+        foundUserId = effectiveUserId;
+        const user = await db.select().from(schema.users).where(eq(schema.users.id, effectiveUserId)).get();
+        if (user) {
+          if (!userName) {
+            userName = `${user.firstName} ${user.lastName}`.trim();
+          }
+          if (!userEmail) {
+            userEmail = user.email;
+          }
+        }
+      }
+
+      if (!userName) {
+        throw new Error("Validation Error: Submitter 'name' is required when unauthenticated. Please provide 'name' in arguments or authenticate with your API key.");
+      }
+      if (!userEmail || !isValidEmail(userEmail)) {
+        throw new Error(`Validation Error: A valid 'email' is required. Received: '${userEmail || ""}'. Please provide a valid email or authenticate with your API key.`);
+      }
+
+      const githubToken = options?.githubToken;
+      const githubRepo = options?.githubRepo || "lutfi-zain/finnplan-mcp";
+
+      if (!githubToken) {
+        throw new Error("Server Error: GitHub integration is not configured. Missing GITHUB_TOKEN environment secret.");
+      }
+
+      const validTypes = ["feedback", "bug", "feature_request", "question"];
+      const feedbackType = validTypes.includes(type) ? type : "feedback";
+      const typeLabel = feedbackType.replace("_", " ").toUpperCase();
+      const issueTitle = `[${typeLabel}] ${title.trim()}`;
+
+      const issueBody = [
+        `### 📝 Feedback Description`,
+        ``,
+        feedback.trim(),
+        ``,
+        `---`,
+        `### 👤 Submitter Details`,
+        `| Field | Value |`,
+        `| :--- | :--- |`,
+        `| **Name** | ${userName} |`,
+        `| **Email** | \`${userEmail}\` |`,
+        `| **User ID** | ${foundUserId ? `\`${foundUserId}\`` : "_Unauthenticated Guest_"} |`,
+        `| **Type** | \`${feedbackType}\` |`,
+        `| **Submitted At** | ${new Date().toISOString()} |`
+      ].join("\n");
+
+      const labels = ["user-feedback", feedbackType];
+      const issueResult = await createGithubIssue({
+        token: githubToken,
+        repo: githubRepo,
+        title: issueTitle,
+        body: issueBody,
+        labels,
+        fetchFn: options?.fetchFn
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              success: true,
+              message: "Feedback submitted successfully and created as a GitHub issue!",
+              issueUrl: issueResult.issueUrl,
+              issueNumber: issueResult.issueNumber,
+              type: feedbackType,
+              submitter: {
+                name: userName,
+                email: userEmail,
+                userId: foundUserId
+              }
+            }, null, 2)
+          }
+        ]
+      };
     }
 
     // -------------------------------------------------------------------------
