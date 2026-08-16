@@ -14,6 +14,7 @@
     "test:integration": "bash scripts/run-integration.sh",
     "test:all": "npm test && npm run test:local && npm run test:remote",
     "token:create": "tsx scripts/generate-token.ts",
+    "user:create": "tsx scripts/create-user.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql",
     "db:migrate:remote": "wrangler d1 execute finance_db --remote --file=./drizzle/0000_nice_marvel_boy.sql",

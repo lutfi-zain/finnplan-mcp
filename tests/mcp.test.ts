@@ -631,4 +631,126 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userBId))).length, 1);
     assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.userId, userBId))).length, 1);
   });
+
+  it('10. Dual-Layer Authorization: Bearer API Key, X-API-Key, and In-Tool Parameter Fallback', async () => {
+    const { d1, db } = createTestDB();
+    const env = { DB: d1, JWT_SECRET: TEST_JWT_SECRET };
+
+    // 1. Register a user via MCP endpoint to get API key
+    const regRes = await app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'register_user',
+          arguments: {
+            firstName: 'Auth',
+            lastName: 'Master',
+            email: 'auth.master@example.com',
+            whatsappNumber: '+628777666555',
+          },
+        },
+      }),
+    }, env);
+
+    assert.equal(regRes.status, 200);
+    const regData = JSON.parse((await regRes.json()).result.content[0].text);
+    const apiKey = regData.apiKey;
+    const userId = regData.userId;
+    assert.ok(apiKey.startsWith('fp_live_'));
+
+    // 2. HTTP call using Bearer API Key (Authorization: Bearer fp_live_...) -> Zero Expiration
+    const bearerKeyRes = await app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'manage_wallet',
+          arguments: {
+            action: 'create',
+            name: 'Bearer Key Wallet',
+            balance: 2500000,
+          },
+        },
+      }),
+    }, env);
+
+    assert.equal(bearerKeyRes.status, 200);
+    const bearerWallet = JSON.parse((await bearerKeyRes.json()).result.content[0].text);
+    assert.equal(bearerWallet.name, 'Bearer Key Wallet');
+    assert.equal(bearerWallet.userId, userId);
+
+    // 3. HTTP call using X-API-Key header (X-API-Key: fp_live_...)
+    const xApiKeyRes = await app.request('/mcp', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json, text/event-stream',
+        'X-API-Key': apiKey,
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: {
+          name: 'manage_category',
+          arguments: {
+            action: 'create',
+            name: 'X-API-Key Category',
+            type: 'expense',
+          },
+        },
+      }),
+    }, env);
+
+    assert.equal(xApiKeyRes.status, 200);
+    const xCat = JSON.parse((await xApiKeyRes.json()).result.content[0].text);
+    assert.equal(xCat.name, 'X-API-Key Category');
+    assert.equal(xCat.userId, userId);
+
+    // 4. In-Tool Parameter Fallback (No HTTP headers, apiKey passed in tool argument)
+    const unauthServer = createMCPServer(db, null, TEST_JWT_SECRET);
+    const inToolRes = await callTool(unauthServer, 'manage_wallet', {
+      action: 'create',
+      name: 'In-Tool Param Wallet',
+      balance: 1000000,
+      apiKey: apiKey,
+    });
+
+    const inToolWallet = JSON.parse(inToolRes.content[0].text);
+    assert.equal(inToolWallet.name, 'In-Tool Param Wallet');
+    assert.equal(inToolWallet.userId, userId);
+
+    // 5. In-Tool Parameter with invalid API key -> Throws Unauthorized
+    await assert.rejects(async () => {
+      await callTool(unauthServer, 'manage_wallet', {
+        action: 'create',
+        name: 'Should Fail',
+        balance: 1000000,
+        apiKey: 'fp_live_invalidkey1234567890abcdef',
+      });
+    }, /Unauthorized/i);
+
+    // 6. In-Tool Call with NO key or header -> Throws Unauthorized
+    await assert.rejects(async () => {
+      await callTool(unauthServer, 'manage_wallet', {
+        action: 'create',
+        name: 'Should Fail Too',
+        balance: 1000000,
+      });
+    }, /Unauthorized/i);
+  });
 });

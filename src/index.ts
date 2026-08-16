@@ -1,9 +1,10 @@
 import { Hono, type Context } from 'hono';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { drizzle } from 'drizzle-orm/d1';
+import { drizzle, type DrizzleD1Database } from 'drizzle-orm/d1';
+import { eq } from 'drizzle-orm';
 import * as schema from './db/schema';
 import { createMCPServer } from './mcp';
-import { verifyUserToken } from './utils/token';
+import { verifyUserToken, hashApiKey } from './utils/token';
 
 type Bindings = {
   DB: D1Database;
@@ -16,7 +17,7 @@ const app = new Hono<{ Bindings: Bindings }>();
 app.use('*', async (c, next) => {
   c.header('Access-Control-Allow-Origin', '*');
   c.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP-Protocol-Version');
+  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key, mcp-api-key, mcp-session-id, MCP-Protocol-Version');
   c.header('Access-Control-Max-Age', '86400');
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('X-Frame-Options', 'DENY');
@@ -38,8 +39,14 @@ app.get('/', (c) => {
   return c.json({
     name: 'eve-finance-mcp',
     status: 'ok',
-    auth: 'pure-mcp-native-jwt',
+    auth: 'dual-auth-api-key-and-jwt',
     description: 'Stateless Pure MCP Server for Eve Finance on Cloudflare Workers (D1)',
+    authMethods: [
+      'Authorization: Bearer <fp_live_apiKey>',
+      'Authorization: Bearer <jwt_token>',
+      'X-API-Key: <fp_live_apiKey>',
+      'In-tool apiKey argument'
+    ],
     authTools: {
       register: 'register_user',
       login: 'login_user'
@@ -53,23 +60,65 @@ app.get('/', (c) => {
 
 app.get('/health', (c) => c.text('OK'));
 
-// Auth helper: Cryptographically verifies Bearer JWT if provided
-async function extractAuthenticatedUserId(c: Context<{ Bindings: Bindings }>): Promise<string | null> {
+// Auth helper: Resolves User ID from Bearer API Key (fp_live_...), Bearer JWT, X-API-Key, or query params
+async function extractAuthenticatedUserId(
+  c: Context<{ Bindings: Bindings }>,
+  db: DrizzleD1Database<typeof schema>
+): Promise<string | null> {
+  let candidate: string | null = null;
+
+  // 1. Check Authorization Header (Bearer <key_or_jwt>)
   const authHeader = c.req.header('Authorization');
-  if (!authHeader) return null;
+  if (authHeader) {
+    const match = authHeader.match(/^Bearer\s+(.+)$/i);
+    if (match) {
+      candidate = match[1].trim();
+    }
+  }
 
-  const match = authHeader.match(/^Bearer\s+(.+)$/i);
-  if (!match) return null;
+  // 2. Check X-API-Key or mcp-api-key headers
+  if (!candidate) {
+    candidate = c.req.header('X-API-Key') || c.req.header('x-api-key') || c.req.header('mcp-api-key') || null;
+    if (candidate) candidate = candidate.trim();
+  }
 
-  const token = match[1].trim();
+  // 3. Check Query Parameter (?apiKey=... or ?token=...)
+  if (!candidate) {
+    candidate = c.req.query('apiKey') || c.req.query('token') || null;
+    if (candidate) candidate = candidate.trim();
+  }
+
+  if (!candidate) return null;
+
+  // Case A: Persistent API Key (starts with fp_live_ or matches API key pattern)
+  if (candidate.startsWith('fp_live_')) {
+    try {
+      const keyHash = await hashApiKey(candidate);
+      const user = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.apiKeyHash, keyHash)).get();
+      return user ? user.id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Case B: Self-Contained JWT Token
   const secret = c.env?.JWT_SECRET;
   if (!secret) {
     console.error('Configuration Error: JWT_SECRET binding is missing');
     return null;
   }
 
-  const user = await verifyUserToken(token, secret);
-  return user ? user.userId : null;
+  const user = await verifyUserToken(candidate, secret);
+  if (user) return user.userId;
+
+  // Case C: Fallback check if a raw non-prefixed key was provided
+  try {
+    const keyHash = await hashApiKey(candidate);
+    const user = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.apiKeyHash, keyHash)).get();
+    return user ? user.id : null;
+  } catch {
+    return null;
+  }
 }
 
 // Handler for MCP requests (Stateless Streamable HTTP & SSE)
@@ -94,8 +143,8 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
     });
   }
 
-  const userId = await extractAuthenticatedUserId(c);
   const db = drizzle(c.env.DB, { schema });
+  const userId = await extractAuthenticatedUserId(c, db);
 
   // Use stateless WebStandardStreamableHTTPServerTransport
   const transport = new WebStandardStreamableHTTPServerTransport({

@@ -20,6 +20,30 @@ This guide explains how to connect and configure the **Eve Finance MCP Server** 
 
 ---
 
+## ⚡ Instant Setup: Mint a User & Config Snippets
+
+Run this command once to register a user on Local or Remote D1 and generate instant ready-to-copy configurations for all coding agents:
+
+```bash
+# For Remote Cloudflare D1 (Production)
+npm run user:create -- --remote --name "Your Name" --email "you@example.com" --phone "+6281234567890"
+
+# For Local Development D1
+npm run user:create -- --name "Your Name" --email "you@example.com" --phone "+6281234567890"
+```
+
+---
+
+## 🔐 Zero-Friction Authentication Methods
+
+Eve Finance MCP supports 3 flexible authorization methods tailored for AI coding agents:
+
+1. **Persistent API Key in Headers (Recommended)**: Set `"Authorization": "Bearer fp_live_..."` or `"X-API-Key": "fp_live_..."` in your `mcp.json`. **Never expires**, no re-login needed!
+2. **In-Tool Parameter Fallback**: If connected without headers, the agent can simply pass `apiKey: "fp_live_..."` directly in any tool call argument.
+3. **Self-Contained JWT Token**: Set `"Authorization": "Bearer <jwt>"` for ephemeral (15-minute) web client sessions.
+
+---
+
 ## 1. Claude Code
 
 [Claude Code](https://code.claude.com/docs/en/agent-sdk/mcp#mcp-json) supports Streamable HTTP MCP transports natively.
@@ -29,11 +53,11 @@ This guide explains how to connect and configure the **Eve Finance MCP Server** 
 Run in your project root or terminal:
 
 ```bash
-# Add unauthenticated (for register/login via agent)
-claude mcp add --transport http eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
+# Add with persistent API Key (Zero Expiration):
+claude mcp add --transport http --header "Authorization: Bearer fp_live_YOUR_API_KEY" eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
 
-# OR Add with pre-authenticated Bearer JWT token:
-claude mcp add --transport http --header "Authorization=Bearer YOUR_JWT_TOKEN" eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
+# OR Add unauthenticated (agent passes apiKey in tool calls):
+claude mcp add --transport http eve-finance https://finnplan-mcp.lutfidmz.workers.dev/mcp
 ```
 
 ### Option B: Project Config File (`.claude/mcp.json` or `.mcp.json`)
@@ -47,7 +71,7 @@ Create `.claude/mcp.json` in your project root:
       "type": "http",
       "url": "https://finnplan-mcp.lutfidmz.workers.dev/mcp",
       "headers": {
-        "Authorization": "Bearer YOUR_15_MIN_JWT_OR_API_KEY"
+        "Authorization": "Bearer fp_live_YOUR_API_KEY"
       }
     }
   }

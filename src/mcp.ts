@@ -12,6 +12,7 @@ import {
   generateApiKey,
   generateUserId,
   generateUserToken,
+  verifyUserToken,
   hashApiKey,
   isValidEmail,
   isValidWhatsApp,
@@ -45,6 +46,44 @@ export function createMCPServer(
 ) {
   if (!jwtSecret || typeof jwtSecret !== "string" || jwtSecret.trim() === "") {
     throw new Error("Server configuration error: JWT_SECRET is required to initialize MCP server");
+  }
+
+  // Helper to dynamically resolve user ID from HTTP headers (userId) or tool arguments (apiKey/token)
+  async function resolveEffectiveUserId(args?: any): Promise<string | null> {
+    if (userId) return userId;
+
+    const candidate = args?.apiKey || args?.token;
+    if (!candidate || typeof candidate !== "string") return null;
+    const clean = candidate.trim();
+    if (clean.length === 0) return null;
+
+    // Case A: Persistent API Key (starts with fp_live_ or raw key)
+    if (clean.startsWith("fp_live_")) {
+      try {
+        const hash = await hashApiKey(clean);
+        const user = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.apiKeyHash, hash)).get();
+        return user ? user.id : null;
+      } catch {
+        return null;
+      }
+    }
+
+    // Case B: Self-Contained JWT Token
+    try {
+      const jwtUser = await verifyUserToken(clean, jwtSecret);
+      if (jwtUser) return jwtUser.userId;
+    } catch {
+      // Continue to fallback
+    }
+
+    // Case C: Fallback raw API key lookup
+    try {
+      const hash = await hashApiKey(clean);
+      const user = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.apiKeyHash, hash)).get();
+      return user ? user.id : null;
+    } catch {
+      return null;
+    }
   }
 
   const server = new Server(
@@ -113,12 +152,13 @@ export function createMCPServer(
     }
 
     // Require authentication for user-specific resources
-    if (!userId) {
-      throw new Error("Unauthorized: Session token is missing or expired (15m limit). Please call 'login_user' with your API Key to get a new session token, or call 'register_user'.");
+    const effectiveUserId = await resolveEffectiveUserId();
+    if (!effectiveUserId) {
+      throw new Error("Unauthorized: Session token is missing or expired. Please set 'Authorization: Bearer <apiKey>' in your MCP client headers or call 'login_user' / 'register_user'.");
     }
 
     if (uri === "finance://wallets/list") {
-      const userWallets = await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userId));
+      const userWallets = await db.select().from(schema.wallets).where(eq(schema.wallets.userId, effectiveUserId));
       return {
         contents: [
           {
@@ -136,7 +176,7 @@ export function createMCPServer(
         .from(schema.budgets)
         .where(
           and(
-            eq(schema.budgets.userId, userId),
+            eq(schema.budgets.userId, effectiveUserId),
             lte(schema.budgets.periodStart, today),
             gte(schema.budgets.periodEnd, today)
           )
@@ -145,7 +185,7 @@ export function createMCPServer(
       const statusList = [];
       for (const b of activeBudgets) {
         const conditions = [
-          eq(schema.transactions.userId, userId),
+          eq(schema.transactions.userId, effectiveUserId),
           eq(schema.transactions.isPlanned, 0),
           eq(schema.transactions.type, "expense"),
           gte(schema.transactions.transactionDate, b.periodStart),
@@ -212,7 +252,7 @@ export function createMCPServer(
           required: ["apiKey"]
         }
       },
-      // Finance Tools (Authenticated with 15-min JWT)
+      // Finance Tools (Authenticated with Persistent API Key or JWT)
       {
         name: "record_transaction",
         description: "Record a financial transaction (expense or income). Automatically and atomically updates wallet balance.",
@@ -226,7 +266,8 @@ export function createMCPServer(
             type: { type: "string", enum: ["expense", "income"], default: "expense" },
             description: { type: "string", description: "Transaction note or description (max 500 characters)" },
             isPlanned: { type: "boolean", default: false, description: "Set true for projected transactions without altering balance" },
-            transactionDate: { type: "string", description: "ISO date format (YYYY-MM-DD). Defaults to today." }
+            transactionDate: { type: "string", description: "ISO date format (YYYY-MM-DD). Defaults to today." },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
           required: ["walletId", "categoryId", "amount"]
         }
@@ -242,7 +283,8 @@ export function createMCPServer(
             type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit"], description: "Wallet type" },
             balance: { type: "number", description: "Initial balance or updated balance (finite number)" },
             currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD)" },
-            walletId: { type: "string", description: "Required for update action (Wallet UUID)" }
+            walletId: { type: "string", description: "Required for update action (Wallet UUID)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
           required: ["action"]
         }
@@ -256,7 +298,8 @@ export function createMCPServer(
             action: { type: "string", enum: ["list", "create"], description: "Action to perform" },
             name: { type: "string", description: "Category name (1-100 characters)" },
             type: { type: "string", enum: ["expense", "income"], default: "expense" },
-            icon: { type: "string", description: "Emoji icon representation (max 10 characters)" }
+            icon: { type: "string", description: "Emoji icon representation (max 10 characters)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
           required: ["action"]
         }
@@ -272,7 +315,8 @@ export function createMCPServer(
             categoryId: { type: "string", description: "Optional category filter UUID" },
             amount: { type: "number", minimum: 0.01, description: "Budget target limit amount (positive finite number)" },
             periodStart: { type: "string", description: "Start date of active window (YYYY-MM-DD)" },
-            periodEnd: { type: "string", description: "End date of active window (YYYY-MM-DD)" }
+            periodEnd: { type: "string", description: "End date of active window (YYYY-MM-DD)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           },
           required: ["action"]
         }
@@ -291,7 +335,8 @@ export function createMCPServer(
             startDate: { type: "string", description: "YYYY-MM-DD" },
             endDate: { type: "string", description: "YYYY-MM-DD" },
             limit: { type: "integer", default: 50, maximum: 200 },
-            offset: { type: "integer", default: 0, minimum: 0 }
+            offset: { type: "integer", default: 0, minimum: 0 },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           }
         }
       },
@@ -302,7 +347,8 @@ export function createMCPServer(
           type: "object",
           properties: {
             startDate: { type: "string", description: "Start date filter (YYYY-MM-DD)" },
-            endDate: { type: "string", description: "End date filter (YYYY-MM-DD)" }
+            endDate: { type: "string", description: "End date filter (YYYY-MM-DD)" },
+            apiKey: { type: "string", description: "Optional: Your persistent API Key (fp_live_...) if not set in headers" }
           }
         }
       }
@@ -416,8 +462,9 @@ export function createMCPServer(
     // -------------------------------------------------------------------------
     // Guard: Require Authentication for All Finance Tools Below
     // -------------------------------------------------------------------------
-    if (!userId) {
-      throw new Error("Unauthorized: JWT session token is missing or expired (15m limit). Please call 'login_user' with your API Key to obtain a fresh 15-minute session token, or call 'register_user' to create an account.");
+    const effectiveUserId = await resolveEffectiveUserId(args);
+    if (!effectiveUserId) {
+      throw new Error("Unauthorized: Please provide your 'apiKey' in tool arguments (e.g. apiKey: 'fp_live_...'), or set 'Authorization: Bearer <apiKey>' in your MCP client headers, or call 'register_user' to create an account.");
     }
 
     // --- Tool: manage_wallet ---
@@ -425,7 +472,7 @@ export function createMCPServer(
       const { action, name: walletName, type, balance, currency, walletId } = (args || {}) as any;
       
       if (action === "list") {
-        const result = await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userId));
+        const result = await db.select().from(schema.wallets).where(eq(schema.wallets.userId, effectiveUserId));
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       
@@ -443,7 +490,7 @@ export function createMCPServer(
         const newWalletId = crypto.randomUUID();
         const result = await db.insert(schema.wallets).values({
           id: newWalletId,
-          userId,
+          userId: effectiveUserId,
           name: walletName.trim(),
           type: cleanType,
           balance: cleanBalance,
@@ -457,7 +504,7 @@ export function createMCPServer(
           throw new Error("Validation Error: Valid string 'walletId' (UUID) is required for update action");
         }
         const cleanWalletId = walletId.trim();
-        const existing = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, userId))).get();
+        const existing = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, effectiveUserId))).get();
         if (!existing) {
           throw new Error(`Wallet ID ${cleanWalletId} not found or unauthorized`);
         }
@@ -481,7 +528,7 @@ export function createMCPServer(
 
         const result = await db.update(schema.wallets)
           .set(updates)
-          .where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, userId)))
+          .where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, effectiveUserId)))
           .returning();
         return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
       }
@@ -494,7 +541,7 @@ export function createMCPServer(
       const { action, name: catName, type, icon } = (args || {}) as any;
       
       if (action === "list") {
-        const result = await db.select().from(schema.categories).where(eq(schema.categories.userId, userId));
+        const result = await db.select().from(schema.categories).where(eq(schema.categories.userId, effectiveUserId));
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       
@@ -507,7 +554,7 @@ export function createMCPServer(
 
         const result = await db.insert(schema.categories).values({
           id: newCategoryId,
-          userId,
+          userId: effectiveUserId,
           name: catName.trim(),
           type: type === "income" ? "income" : "expense",
           icon: cleanIcon
@@ -523,7 +570,7 @@ export function createMCPServer(
       const { action, name: budgetName, categoryId, amount, periodStart, periodEnd } = (args || {}) as any;
       
       if (action === "list") {
-        const result = await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userId));
+        const result = await db.select().from(schema.budgets).where(eq(schema.budgets.userId, effectiveUserId));
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
       
@@ -547,7 +594,7 @@ export function createMCPServer(
             throw new Error("Validation Error: 'categoryId' must be a valid string (UUID)");
           }
           const targetCatId = (categoryId as string).trim();
-          const category = await db.select().from(schema.categories).where(and(eq(schema.categories.id, targetCatId), eq(schema.categories.userId, userId))).get();
+          const category = await db.select().from(schema.categories).where(and(eq(schema.categories.id, targetCatId), eq(schema.categories.userId, effectiveUserId))).get();
           if (!category) {
             throw new Error(`Category ID ${targetCatId} not found or unauthorized`);
           }
@@ -557,7 +604,7 @@ export function createMCPServer(
         const newBudgetId = crypto.randomUUID();
         const result = await db.insert(schema.budgets).values({
           id: newBudgetId,
-          userId,
+          userId: effectiveUserId,
           name: budgetName.trim(),
           categoryId: cleanCategoryId,
           amount,
@@ -568,11 +615,11 @@ export function createMCPServer(
       }
       
       if (action === "status") {
-        const budgets = await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userId));
+        const budgets = await db.select().from(schema.budgets).where(eq(schema.budgets.userId, effectiveUserId));
         const statusList = [];
         for (const b of budgets) {
           const conditions = [
-            eq(schema.transactions.userId, userId),
+            eq(schema.transactions.userId, effectiveUserId),
             eq(schema.transactions.isPlanned, 0),
             eq(schema.transactions.type, "expense"),
             gte(schema.transactions.transactionDate, b.periodStart),
@@ -623,10 +670,10 @@ export function createMCPServer(
       const cleanCategoryId = categoryId.trim();
       const txType = type === "income" ? "income" : "expense";
 
-      const wallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, userId))).get();
+      const wallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, effectiveUserId))).get();
       if (!wallet) throw new Error(`Wallet ID ${cleanWalletId} not found or unauthorized`);
 
-      const category = await db.select().from(schema.categories).where(and(eq(schema.categories.id, cleanCategoryId), eq(schema.categories.userId, userId))).get();
+      const category = await db.select().from(schema.categories).where(and(eq(schema.categories.id, cleanCategoryId), eq(schema.categories.userId, effectiveUserId))).get();
       if (!category) throw new Error(`Category ID ${cleanCategoryId} not found or unauthorized`);
 
       let cleanBudgetId: string | null = null;
@@ -635,7 +682,7 @@ export function createMCPServer(
           throw new Error("Validation Error: 'budgetId' must be a valid string (UUID)");
         }
         const targetBudgetId = (budgetId as string).trim();
-        const budget = await db.select().from(schema.budgets).where(and(eq(schema.budgets.id, targetBudgetId), eq(schema.budgets.userId, userId))).get();
+        const budget = await db.select().from(schema.budgets).where(and(eq(schema.budgets.id, targetBudgetId), eq(schema.budgets.userId, effectiveUserId))).get();
         if (!budget) throw new Error(`Budget ID ${targetBudgetId} not found or unauthorized`);
         cleanBudgetId = targetBudgetId;
       }
@@ -646,7 +693,7 @@ export function createMCPServer(
 
       const tx = await db.insert(schema.transactions).values({
         id: newTransactionId,
-        userId,
+        userId: effectiveUserId,
         walletId: cleanWalletId,
         categoryId: cleanCategoryId,
         budgetId: cleanBudgetId,
@@ -662,7 +709,7 @@ export function createMCPServer(
         const balanceDelta = txType === "expense" ? -amount : amount;
         await db.update(schema.wallets)
           .set({ balance: sql`balance + ${balanceDelta}` })
-          .where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, userId)));
+          .where(and(eq(schema.wallets.id, cleanWalletId), eq(schema.wallets.userId, effectiveUserId)));
       }
 
       return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
@@ -671,7 +718,7 @@ export function createMCPServer(
     // --- Tool: list_transactions ---
     if (name === "list_transactions") {
       const { walletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit = 50, offset = 0 } = (args || {}) as any;
-      const conditions = [eq(schema.transactions.userId, userId)];
+      const conditions = [eq(schema.transactions.userId, effectiveUserId)];
       
       if (walletId !== undefined && typeof walletId === "string" && walletId.trim() !== "") {
         conditions.push(eq(schema.transactions.walletId, walletId.trim()));
@@ -718,7 +765,7 @@ export function createMCPServer(
       if (endDate !== undefined && !isValidDate(endDate)) throw new Error("Validation Error: 'endDate' must be YYYY-MM-DD");
 
       // 1. Group net worth by currency across all user wallets
-      const walletsData = await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userId));
+      const walletsData = await db.select().from(schema.wallets).where(eq(schema.wallets.userId, effectiveUserId));
       const netWorthByCurrency: Record<string, number> = {};
       for (const w of walletsData) {
         netWorthByCurrency[w.currency] = Number(((netWorthByCurrency[w.currency] || 0) + w.balance).toFixed(2));
@@ -726,7 +773,7 @@ export function createMCPServer(
 
       // 2. Query non-planned transactions
       const conditions = [
-        eq(schema.transactions.userId, userId),
+        eq(schema.transactions.userId, effectiveUserId),
         eq(schema.transactions.isPlanned, 0)
       ];
       if (startDate !== undefined) conditions.push(gte(schema.transactions.transactionDate, startDate));
@@ -735,7 +782,7 @@ export function createMCPServer(
       const txs = await db.select().from(schema.transactions).where(and(...conditions));
       
       // 3. Map categories for human-readable breakdown
-      const categoriesData = await db.select().from(schema.categories).where(eq(schema.categories.userId, userId));
+      const categoriesData = await db.select().from(schema.categories).where(eq(schema.categories.userId, effectiveUserId));
       const categoryMap = new Map(categoriesData.map(c => [c.id, c.name]));
 
       let totalIncome = 0;
