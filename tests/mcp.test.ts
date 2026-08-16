@@ -83,13 +83,17 @@ class MockD1PreparedStatement {
 
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
-  const ddlPath = join(__dirname, '../drizzle/0000_nice_marvel_boy.sql');
-  const ddl = readFileSync(ddlPath, 'utf-8');
-  const statements = ddl.split('--> statement-breakpoint');
-  for (const statement of statements) {
-    const trimmed = statement.trim();
-    if (trimmed) {
-      sqlite.exec(trimmed);
+  sqlite.exec('PRAGMA foreign_keys = ON;');
+  const migrationFiles = ['0000_nice_marvel_boy.sql', '0001_low_stingray.sql'];
+  for (const file of migrationFiles) {
+    const ddlPath = join(__dirname, `../drizzle/${file}`);
+    const ddl = readFileSync(ddlPath, 'utf-8');
+    const statements = ddl.split('--> statement-breakpoint');
+    for (const statement of statements) {
+      const trimmed = statement.trim();
+      if (trimmed) {
+        sqlite.exec(trimmed);
+      }
     }
   }
 
@@ -564,5 +568,67 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     assert.equal(createdWallet.name, 'E2E Bank');
     assert.equal(createdWallet.balance, 5000000);
     assert.equal(typeof createdWallet.id, 'string', 'Wallet ID should be a string UUID');
+  });
+
+  it('9. Pure Database-Level ON DELETE CASCADE Verification', async () => {
+    const { db } = createTestDB();
+    const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
+
+    // Register User A
+    const userARes = await callTool(publicServer, 'register_user', {
+      firstName: 'Cascade',
+      lastName: 'UserA',
+      email: 'cascade_a@example.com',
+      whatsappNumber: '+62811111111',
+    });
+    const { userId: userAId } = JSON.parse(userARes.content[0].text);
+    const serverA = createMCPServer(db, userAId, TEST_JWT_SECRET);
+
+    // Register User B
+    const userBRes = await callTool(publicServer, 'register_user', {
+      firstName: 'Cascade',
+      lastName: 'UserB',
+      email: 'cascade_b@example.com',
+      whatsappNumber: '+62822222222',
+    });
+    const { userId: userBId } = JSON.parse(userBRes.content[0].text);
+    const serverB = createMCPServer(db, userBId, TEST_JWT_SECRET);
+
+    // Populate User A data (Wallet, Category, Budget, Transaction)
+    const walletA = JSON.parse((await callTool(serverA, 'manage_wallet', { action: 'create', name: 'Wallet A', balance: 500000 })).content[0].text);
+    const catA = JSON.parse((await callTool(serverA, 'manage_category', { action: 'create', name: 'Cat A', type: 'expense' })).content[0].text);
+    const budgetA = JSON.parse((await callTool(serverA, 'manage_budget', { action: 'create', name: 'Budget A', categoryId: catA.id, amount: 100000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
+    await callTool(serverA, 'record_transaction', { walletId: walletA.id, categoryId: catA.id, budgetId: budgetA.id, amount: 50000, type: 'expense' });
+
+    // Populate User B data
+    const walletB = JSON.parse((await callTool(serverB, 'manage_wallet', { action: 'create', name: 'Wallet B', balance: 200000 })).content[0].text);
+    const catB = JSON.parse((await callTool(serverB, 'manage_category', { action: 'create', name: 'Cat B', type: 'expense' })).content[0].text);
+    const budgetB = JSON.parse((await callTool(serverB, 'manage_budget', { action: 'create', name: 'Budget B', categoryId: catB.id, amount: 50000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
+    await callTool(serverB, 'record_transaction', { walletId: walletB.id, categoryId: catB.id, budgetId: budgetB.id, amount: 25000, type: 'expense' });
+
+    // Verify User A records exist
+    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userAId))).length, 1);
+    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.userId, userAId))).length, 1);
+    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userAId))).length, 1);
+    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.userId, userAId))).length, 1);
+
+    // Execute pure database-level DELETE on users table
+    await db.delete(schema.users).where(eq(schema.users.id, userAId));
+
+    // Assert User A record is deleted
+    const deletedUserA = await db.select().from(schema.users).where(eq(schema.users.id, userAId)).get();
+    assert.equal(deletedUserA, undefined);
+
+    // Assert all User A child data automatically cascade-deleted by SQLite foreign keys
+    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userAId))).length, 0);
+    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.userId, userAId))).length, 0);
+    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userAId))).length, 0);
+    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.userId, userAId))).length, 0);
+
+    // Assert User B records remain 100% untouched
+    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userBId))).length, 1);
+    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.userId, userBId))).length, 1);
+    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userBId))).length, 1);
+    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.userId, userBId))).length, 1);
   });
 });

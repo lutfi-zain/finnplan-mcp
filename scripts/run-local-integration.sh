@@ -14,6 +14,7 @@ echo ""
 # 1. Reset and apply migrations to local D1
 echo "📦 Migrating local D1 database..."
 npx wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql > /dev/null 2>&1 || true
+npx wrangler d1 execute finance_db --local --file=./drizzle/0001_low_stingray.sql > /dev/null 2>&1 || true
 echo "✅ Local D1 database ready."
 echo ""
 

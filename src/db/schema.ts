@@ -72,10 +72,10 @@ export const transactions = sqliteTable("transactions", {
     .references(() => users.id, { onDelete: "cascade" }),
   walletId: text("wallet_id")
     .notNull()
-    .references(() => wallets.id, { onDelete: "restrict" }),
+    .references(() => wallets.id, { onDelete: "cascade" }),
   categoryId: text("category_id")
     .notNull()
-    .references(() => categories.id, { onDelete: "restrict" }),
+    .references(() => categories.id, { onDelete: "cascade" }),
   budgetId: text("budget_id").references(() => budgets.id, { onDelete: "set null" }),
   amount: real("amount").notNull(),
   type: text("type").notNull().default("expense"),
