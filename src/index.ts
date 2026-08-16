@@ -1,26 +1,36 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { drizzle } from 'drizzle-orm/d1';
 import * as schema from './db/schema';
 import { createMCPServer } from './mcp';
-import { verifyUserToken, DEFAULT_DEV_JWT_SECRET } from './utils/token';
+import { verifyUserToken } from './utils/token';
 
 type Bindings = {
   DB: D1Database;
-  JWT_SECRET?: string;
+  JWT_SECRET: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
 
-// Global CORS & preflight handling
+// Global Security & CORS Headers
 app.use('*', async (c, next) => {
   c.header('Access-Control-Allow-Origin', '*');
-  c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  c.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, MCP-Protocol-Version');
+  c.header('Access-Control-Max-Age', '86400');
+  c.header('X-Content-Type-Options', 'nosniff');
+  c.header('X-Frame-Options', 'DENY');
+
   if (c.req.method === 'OPTIONS') {
     return new Response(null, { status: 204 });
   }
   await next();
+});
+
+// Centralized Unhandled Error Handler (Sanitizes stack trace leaks)
+app.onError((err, c) => {
+  console.error('Unhandled Application Error:', err);
+  return c.json({ error: 'Internal Server Error', message: err.message }, 500);
 });
 
 // Health check & Server info endpoint
@@ -44,22 +54,34 @@ app.get('/', (c) => {
 app.get('/health', (c) => c.text('OK'));
 
 // Auth helper: Cryptographically verifies Bearer JWT if provided
-async function extractAuthenticatedUserId(c: any): Promise<string | null> {
+async function extractAuthenticatedUserId(c: Context<{ Bindings: Bindings }>): Promise<string | null> {
   const authHeader = c.req.header('Authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!authHeader) return null;
+
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+
+  const token = match[1].trim();
+  const secret = c.env?.JWT_SECRET;
+  if (!secret) {
+    console.error('Configuration Error: JWT_SECRET binding is missing');
     return null;
   }
-  const token = authHeader.replace('Bearer ', '').trim();
-  if (!token) return null;
 
-  const secret = c.env?.JWT_SECRET || DEFAULT_DEV_JWT_SECRET;
   const user = await verifyUserToken(token, secret);
   return user ? user.userId : null;
 }
 
 // Handler for MCP requests (Stateless Streamable HTTP & SSE)
-async function handleMcpRequest(c: any) {
-  const secret = c.env?.JWT_SECRET || DEFAULT_DEV_JWT_SECRET;
+async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
+  const secret = c.env?.JWT_SECRET;
+  if (!secret) {
+    return c.json({ error: 'Server Misconfiguration: JWT_SECRET environment variable is missing' }, 500);
+  }
+  if (!c.env?.DB) {
+    return c.json({ error: 'Server Misconfiguration: Database (DB) binding is missing' }, 500);
+  }
+
   const userId = await extractAuthenticatedUserId(c);
   const db = drizzle(c.env.DB, { schema });
 
@@ -75,8 +97,9 @@ async function handleMcpRequest(c: any) {
   return transport.handleRequest(c.req.raw);
 }
 
-// Mount on /mcp and /sse
-app.all('/mcp', handleMcpRequest);
-app.all('/sse', handleMcpRequest);
+// Mount explicitly on allowed methods
+app.post('/mcp', handleMcpRequest);
+app.get('/sse', handleMcpRequest);
+app.post('/sse', handleMcpRequest);
 
 export default app;

@@ -1,23 +1,26 @@
 import { sql } from "drizzle-orm";
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, real, index, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const users = sqliteTable("users", {
-  id: text("id").primaryKey(), // UUID / usr_...
+  id: text("id").primaryKey(), // usr_...
   firstName: text("first_name").notNull(),
   lastName: text("last_name").notNull(),
   email: text("email").notNull().unique(),
   whatsappNumber: text("whatsapp_number").notNull(),
-  apiKey: text("api_key").notNull().unique(),
+  apiKeyHash: text("api_key_hash").notNull().unique(),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  uniqueIndex("users_email_idx").on(table.email),
+  uniqueIndex("users_api_key_hash_idx").on(table.apiKeyHash),
+]);
 
 export const wallets = sqliteTable("wallets", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   type: text("type").notNull().default("bank"),
   balance: real("balance").notNull().default(0.0),
@@ -25,48 +28,55 @@ export const wallets = sqliteTable("wallets", {
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  index("wallets_user_id_idx").on(table.userId),
+]);
 
 export const categories = sqliteTable("categories", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   type: text("type").notNull().default("expense"),
   icon: text("icon"),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  index("categories_user_id_idx").on(table.userId),
+]);
 
 export const budgets = sqliteTable("budgets", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
-  categoryId: integer("category_id").references(() => categories.id),
+  categoryId: integer("category_id").references(() => categories.id, { onDelete: "set null" }),
   amount: real("amount").notNull(),
   periodStart: text("period_start").notNull(),
   periodEnd: text("period_end").notNull(),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  index("budgets_user_period_idx").on(table.userId, table.periodStart, table.periodEnd),
+  index("budgets_category_id_idx").on(table.categoryId),
+]);
 
 export const transactions = sqliteTable("transactions", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   userId: text("user_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "cascade" }),
   walletId: integer("wallet_id")
     .notNull()
-    .references(() => wallets.id),
+    .references(() => wallets.id, { onDelete: "restrict" }),
   categoryId: integer("category_id")
     .notNull()
-    .references(() => categories.id),
-  budgetId: integer("budget_id").references(() => budgets.id),
+    .references(() => categories.id, { onDelete: "restrict" }),
+  budgetId: integer("budget_id").references(() => budgets.id, { onDelete: "set null" }),
   amount: real("amount").notNull(),
   type: text("type").notNull().default("expense"),
   description: text("description"),
@@ -75,4 +85,9 @@ export const transactions = sqliteTable("transactions", {
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [
+  index("transactions_user_date_idx").on(table.userId, table.transactionDate),
+  index("transactions_wallet_id_idx").on(table.walletId),
+  index("transactions_category_id_idx").on(table.categoryId),
+  index("transactions_budget_id_idx").on(table.budgetId),
+]);

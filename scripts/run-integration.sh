@@ -31,7 +31,7 @@ echo ""
 # 4. Run integration tests
 echo "🧪 Running integration tests against ${WORKER_URL}..."
 echo ""
-WORKER_URL="${WORKER_URL}" tsx --test tests/integration.test.ts
+WORKER_URL="${WORKER_URL}" npx tsx --test tests/integration.test.ts
 TEST_EXIT=$?
 echo ""
 

@@ -7,22 +7,42 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { DrizzleD1Database } from "drizzle-orm/d1";
 import * as schema from "./db/schema";
-import { eq, and, desc, gte, lte } from "drizzle-orm";
+import { eq, and, desc, gte, lte, sql } from "drizzle-orm";
 import {
   generateApiKey,
   generateUserId,
   generateUserToken,
+  hashApiKey,
   isValidEmail,
   isValidWhatsApp,
   DEFAULT_TOKEN_EXPIRY_SECONDS,
-  DEFAULT_DEV_JWT_SECRET,
 } from "./utils/token";
+
+// Helper validators
+function isValidPositiveNumber(val: any): boolean {
+  return typeof val === "number" && Number.isFinite(val) && val > 0;
+}
+
+function isValidFiniteNumber(val: any): boolean {
+  return typeof val === "number" && Number.isFinite(val);
+}
+
+function isValidDate(dateStr: string): boolean {
+  if (!dateStr || typeof dateStr !== "string") return false;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const timestamp = Date.parse(dateStr);
+  return !isNaN(timestamp);
+}
 
 export function createMCPServer(
   db: DrizzleD1Database<typeof schema>,
   userId: string | null,
-  jwtSecret: string = DEFAULT_DEV_JWT_SECRET
+  jwtSecret: string
 ) {
+  if (!jwtSecret || typeof jwtSecret !== "string" || jwtSecret.trim() === "") {
+    throw new Error("Server configuration error: JWT_SECRET is required to initialize MCP server");
+  }
+
   const server = new Server(
     { name: "eve-finance-mcp", version: "1.0.0" },
     { capabilities: { tools: {}, resources: {} } }
@@ -60,19 +80,21 @@ export function createMCPServer(
     if (uri === "finance://db/schema") {
       const schemaDef = {
         tables: {
-          users: ["id (PK)", "first_name", "last_name", "email (UNIQUE)", "whatsapp_number", "api_key (UNIQUE)", "created_at"],
-          wallets: ["id (PK)", "user_id (FK)", "name", "type", "balance", "currency", "created_at"],
-          categories: ["id (PK)", "user_id (FK)", "name", "type", "icon", "created_at"],
-          budgets: ["id (PK)", "user_id (FK)", "name", "category_id (FK)", "amount", "period_start", "period_end", "created_at"],
+          users: ["id (PK)", "first_name", "last_name", "email (UNIQUE)", "whatsapp_number", "api_key_hash (UNIQUE)", "created_at"],
+          wallets: ["id (PK)", "user_id (FK CASCADE)", "name", "type", "balance", "currency", "created_at"],
+          categories: ["id (PK)", "user_id (FK CASCADE)", "name", "type", "icon", "created_at"],
+          budgets: ["id (PK)", "user_id (FK CASCADE)", "name", "category_id (FK SET NULL)", "amount", "period_start", "period_end", "created_at"],
           transactions: [
-            "id (PK)", "user_id (FK)", "wallet_id (FK)", "category_id (FK)", "budget_id (FK)",
+            "id (PK)", "user_id (FK CASCADE)", "wallet_id (FK RESTRICT)", "category_id (FK RESTRICT)", "budget_id (FK SET NULL)",
             "amount", "type", "description", "is_planned", "transaction_date", "created_at"
           ]
         },
-        relationships: {
-          wallets_to_transactions: "1-to-N (Required)",
-          categories_to_transactions: "1-to-N (Required)",
-          budgets_to_transactions: "1-to-N (Optional)"
+        indexes: {
+          users: ["users_email_idx", "users_api_key_hash_idx"],
+          wallets: ["wallets_user_id_idx"],
+          categories: ["categories_user_id_idx"],
+          budgets: ["budgets_user_period_idx", "budgets_category_id_idx"],
+          transactions: ["transactions_user_date_idx", "transactions_wallet_id_idx", "transactions_category_id_idx", "transactions_budget_id_idx"]
         }
       };
       return {
@@ -121,6 +143,7 @@ export function createMCPServer(
         const conditions = [
           eq(schema.transactions.userId, userId),
           eq(schema.transactions.isPlanned, 0),
+          eq(schema.transactions.type, "expense"), // Crucial: only count expense transactions
           gte(schema.transactions.transactionDate, b.periodStart),
           lte(schema.transactions.transactionDate, b.periodEnd)
         ];
@@ -134,8 +157,8 @@ export function createMCPServer(
         const spent = txs.reduce((sum, tx) => sum + tx.amount, 0);
         statusList.push({
           budget: b,
-          spent,
-          remaining: b.amount - spent,
+          spent: Number(spent.toFixed(2)),
+          remaining: Number((b.amount - spent).toFixed(2)),
           percentUsed: b.amount > 0 ? Number(((spent / b.amount) * 100).toFixed(2)) : 0
         });
       }
@@ -166,11 +189,10 @@ export function createMCPServer(
         inputSchema: {
           type: "object",
           properties: {
-            firstName: { type: "string", description: "User's first name" },
-            lastName: { type: "string", description: "User's last name" },
+            firstName: { type: "string", description: "User's first name (1-100 characters)" },
+            lastName: { type: "string", description: "User's last name (1-100 characters)" },
             email: { type: "string", description: "Valid email address (e.g. user@example.com)" },
-            whatsappNumber: { type: "string", description: "WhatsApp phone number with '+' and country code (e.g. +6281234567890)" },
-            userId: { type: "string", description: "Optional custom user ID (auto-generated if omitted)" }
+            whatsappNumber: { type: "string", description: "WhatsApp phone number with '+' and country code (e.g. +6281234567890)" }
           },
           required: ["firstName", "lastName", "email", "whatsappNumber"]
         }
@@ -189,16 +211,16 @@ export function createMCPServer(
       // Finance Tools (Authenticated with 15-min JWT)
       {
         name: "record_transaction",
-        description: "Record a financial transaction (income, expense, or transfer). Auto-updates wallet balance for actual transactions.",
+        description: "Record a financial transaction (expense or income). Automatically and atomically updates wallet balance.",
         inputSchema: {
           type: "object",
           properties: {
             walletId: { type: "integer", description: "Target Wallet ID" },
             categoryId: { type: "integer", description: "Target Category ID" },
             budgetId: { type: "integer", description: "Optional: Linked Budget ID" },
-            amount: { type: "number", minimum: 0.01, description: "Transaction amount (positive number)" },
-            type: { type: "string", enum: ["expense", "income", "transfer"], default: "expense" },
-            description: { type: "string", description: "Transaction note or description" },
+            amount: { type: "number", minimum: 0.01, description: "Transaction amount (positive finite number)" },
+            type: { type: "string", enum: ["expense", "income"], default: "expense" },
+            description: { type: "string", description: "Transaction note or description (max 500 characters)" },
             isPlanned: { type: "boolean", default: false, description: "Set true for projected transactions without altering balance" },
             transactionDate: { type: "string", description: "ISO date format (YYYY-MM-DD). Defaults to today." }
           },
@@ -212,10 +234,10 @@ export function createMCPServer(
           type: "object",
           properties: {
             action: { type: "string", enum: ["list", "create", "update"], description: "Action to perform" },
-            name: { type: "string", description: "Wallet name (e.g. Cash, BCA, Mandiri)" },
+            name: { type: "string", description: "Wallet name (1-100 characters)" },
             type: { type: "string", enum: ["bank", "cash", "e-wallet", "credit"], description: "Wallet type" },
-            balance: { type: "number", description: "Initial balance or updated balance" },
-            currency: { type: "string", default: "IDR", description: "Currency code" },
+            balance: { type: "number", description: "Initial balance or updated balance (finite number)" },
+            currency: { type: "string", default: "IDR", description: "Currency code (e.g. IDR, USD)" },
             walletId: { type: "integer", description: "Required for update action" }
           },
           required: ["action"]
@@ -228,9 +250,9 @@ export function createMCPServer(
           type: "object",
           properties: {
             action: { type: "string", enum: ["list", "create"], description: "Action to perform" },
-            name: { type: "string", description: "Category name (e.g. Food & Beverage, Utilities)" },
+            name: { type: "string", description: "Category name (1-100 characters)" },
             type: { type: "string", enum: ["expense", "income"], default: "expense" },
-            icon: { type: "string", description: "Emoji icon representation (e.g. 🍔, 🚗)" }
+            icon: { type: "string", description: "Emoji icon representation (max 10 characters)" }
           },
           required: ["action"]
         }
@@ -242,9 +264,9 @@ export function createMCPServer(
           type: "object",
           properties: {
             action: { type: "string", enum: ["list", "create", "status"], description: "Action to perform" },
-            name: { type: "string", description: "Budget title (e.g. August Food Budget)" },
+            name: { type: "string", description: "Budget title (1-100 characters)" },
             categoryId: { type: "integer", description: "Optional category filter ID" },
-            amount: { type: "number", minimum: 0.01, description: "Budget target limit amount" },
+            amount: { type: "number", minimum: 0.01, description: "Budget target limit amount (positive finite number)" },
             periodStart: { type: "string", description: "Start date of active window (YYYY-MM-DD)" },
             periodEnd: { type: "string", description: "End date of active window (YYYY-MM-DD)" }
           },
@@ -253,24 +275,25 @@ export function createMCPServer(
       },
       {
         name: "list_transactions",
-        description: "Query transactions with structured filters (wallet, category, budget, date range, is_planned).",
+        description: "Query transactions with structured filters (wallet, category, budget, date range, is_planned, pagination).",
         inputSchema: {
           type: "object",
           properties: {
             walletId: { type: "integer" },
             categoryId: { type: "integer" },
             budgetId: { type: "integer" },
-            type: { type: "string", enum: ["expense", "income", "transfer"] },
+            type: { type: "string", enum: ["expense", "income"] },
             isPlanned: { type: "boolean" },
             startDate: { type: "string", description: "YYYY-MM-DD" },
             endDate: { type: "string", description: "YYYY-MM-DD" },
-            limit: { type: "integer", default: 50, maximum: 200 }
+            limit: { type: "integer", default: 50, maximum: 200 },
+            offset: { type: "integer", default: 0, minimum: 0 }
           }
         }
       },
       {
         name: "financial_summary",
-        description: "Generate a complete financial report (net worth across wallets, actual income & expenses, category breakdown).",
+        description: "Generate a complete financial report grouped by currency (net worth by currency, income, expenses, category breakdown).",
         inputSchema: {
           type: "object",
           properties: {
@@ -290,15 +313,15 @@ export function createMCPServer(
 
     // --- Tool: register_user ---
     if (name === "register_user") {
-      const { firstName, lastName, email, whatsappNumber, userId: customUserId } = (args || {}) as any;
+      const { firstName, lastName, email, whatsappNumber } = (args || {}) as any;
 
-      if (!firstName || typeof firstName !== "string" || firstName.trim() === "") {
-        throw new Error("Validation Error: 'firstName' is required");
+      if (!firstName || typeof firstName !== "string" || firstName.trim().length === 0 || firstName.trim().length > 100) {
+        throw new Error("Validation Error: 'firstName' is required and must be between 1 and 100 characters");
       }
-      if (!lastName || typeof lastName !== "string" || lastName.trim() === "") {
-        throw new Error("Validation Error: 'lastName' is required");
+      if (!lastName || typeof lastName !== "string" || lastName.trim().length === 0 || lastName.trim().length > 100) {
+        throw new Error("Validation Error: 'lastName' is required and must be between 1 and 100 characters");
       }
-      if (!isValidEmail(email)) {
+      if (!isValidEmail(email) || (typeof email === "string" && email.length > 255)) {
         throw new Error("Validation Error: Invalid email format. Please provide a valid email (e.g. user@example.com)");
       }
       if (!isValidWhatsApp(whatsappNumber)) {
@@ -311,8 +334,10 @@ export function createMCPServer(
         throw new Error(`Registration Error: Email '${normalizedEmail}' is already registered. Please login with your API key using the 'login_user' tool.`);
       }
 
-      const newUserId = customUserId?.trim() || generateUserId();
+      // Always generate secure server-side user ID
+      const newUserId = generateUserId();
       const apiKey = generateApiKey();
+      const apiKeyHash = await hashApiKey(apiKey);
       const cleanFirstName = firstName.trim();
       const cleanLastName = lastName.trim();
       const cleanWhatsApp = whatsappNumber.trim();
@@ -324,7 +349,7 @@ export function createMCPServer(
         lastName: cleanLastName,
         email: normalizedEmail,
         whatsappNumber: cleanWhatsApp,
-        apiKey
+        apiKeyHash
       });
 
       const token = await generateUserToken({
@@ -357,7 +382,8 @@ export function createMCPServer(
       }
 
       const cleanKey = apiKey.trim();
-      const user = await db.select().from(schema.users).where(eq(schema.users.apiKey, cleanKey)).get();
+      const apiKeyHash = await hashApiKey(cleanKey);
+      const user = await db.select().from(schema.users).where(eq(schema.users.apiKeyHash, apiKeyHash)).get();
       if (!user) {
         throw new Error("Authentication Error: Invalid API Key. User not found. Please verify your API Key or register via 'register_user'.");
       }
@@ -400,22 +426,29 @@ export function createMCPServer(
       }
       
       if (action === "create") {
-        if (!walletName || typeof walletName !== "string" || walletName.trim() === "") {
-          throw new Error("Wallet 'name' is required for create action");
+        if (!walletName || typeof walletName !== "string" || walletName.trim().length === 0 || walletName.trim().length > 100) {
+          throw new Error("Validation Error: Wallet 'name' is required (1-100 characters)");
         }
+        const allowedTypes = ["bank", "cash", "e-wallet", "credit"];
+        const cleanType = type && allowedTypes.includes(type) ? type : "bank";
+        const cleanBalance = isValidFiniteNumber(balance) ? balance : 0;
+        const cleanCurrency = currency && typeof currency === "string" && currency.trim().length > 0 && currency.trim().length <= 10
+          ? currency.trim().toUpperCase()
+          : "IDR";
+
         const result = await db.insert(schema.wallets).values({
           userId,
           name: walletName.trim(),
-          type: type || "bank",
-          balance: typeof balance === "number" ? balance : 0,
-          currency: currency || "IDR"
+          type: cleanType,
+          balance: cleanBalance,
+          currency: cleanCurrency
         }).returning();
         return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
       }
       
       if (action === "update") {
-        if (!walletId || typeof walletId !== "number") {
-          throw new Error("Numeric 'walletId' is required for update action");
+        if (!walletId || typeof walletId !== "number" || !Number.isInteger(walletId)) {
+          throw new Error("Validation Error: Valid integer 'walletId' is required for update action");
         }
         const existing = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, walletId), eq(schema.wallets.userId, userId))).get();
         if (!existing) {
@@ -423,10 +456,21 @@ export function createMCPServer(
         }
 
         const updates: any = {};
-        if (walletName) updates.name = walletName.trim();
-        if (balance !== undefined && typeof balance === "number") updates.balance = balance;
-        if (type) updates.type = type;
-        if (currency) updates.currency = currency;
+        if (walletName && typeof walletName === "string" && walletName.trim().length > 0 && walletName.trim().length <= 100) {
+          updates.name = walletName.trim();
+        }
+        if (balance !== undefined) {
+          if (!isValidFiniteNumber(balance)) {
+            throw new Error("Validation Error: 'balance' must be a valid finite number");
+          }
+          updates.balance = balance;
+        }
+        if (type && ["bank", "cash", "e-wallet", "credit"].includes(type)) {
+          updates.type = type;
+        }
+        if (currency && typeof currency === "string" && currency.trim().length > 0 && currency.trim().length <= 10) {
+          updates.currency = currency.trim().toUpperCase();
+        }
 
         const result = await db.update(schema.wallets)
           .set(updates)
@@ -448,14 +492,16 @@ export function createMCPServer(
       }
       
       if (action === "create") {
-        if (!catName || typeof catName !== "string" || catName.trim() === "") {
-          throw new Error("Category 'name' is required for create action");
+        if (!catName || typeof catName !== "string" || catName.trim().length === 0 || catName.trim().length > 100) {
+          throw new Error("Validation Error: Category 'name' is required (1-100 characters)");
         }
+        const cleanIcon = icon && typeof icon === "string" && icon.trim().length <= 10 ? icon.trim() : null;
+
         const result = await db.insert(schema.categories).values({
           userId,
           name: catName.trim(),
           type: type === "income" ? "income" : "expense",
-          icon: icon || null
+          icon: cleanIcon
         }).returning();
         return { content: [{ type: "text", text: JSON.stringify(result[0], null, 2) }] };
       }
@@ -473,14 +519,23 @@ export function createMCPServer(
       }
       
       if (action === "create") {
-        if (!budgetName || !amount || !periodStart || !periodEnd) {
-          throw new Error("Fields 'name', 'amount', 'periodStart', and 'periodEnd' are required for create action");
+        if (!budgetName || typeof budgetName !== "string" || budgetName.trim().length === 0 || budgetName.trim().length > 100) {
+          throw new Error("Validation Error: Budget 'name' is required (1-100 characters)");
         }
-        if (typeof amount !== "number" || amount <= 0) {
-          throw new Error("Budget 'amount' must be a positive number");
+        if (!isValidPositiveNumber(amount)) {
+          throw new Error("Validation Error: Budget 'amount' must be a positive finite number");
+        }
+        if (!isValidDate(periodStart) || !isValidDate(periodEnd)) {
+          throw new Error("Validation Error: 'periodStart' and 'periodEnd' must be valid ISO dates (YYYY-MM-DD)");
+        }
+        if (periodStart > periodEnd) {
+          throw new Error("Validation Error: 'periodStart' cannot be after 'periodEnd'");
         }
 
         if (categoryId) {
+          if (typeof categoryId !== "number" || !Number.isInteger(categoryId)) {
+            throw new Error("Validation Error: 'categoryId' must be a valid integer");
+          }
           const category = await db.select().from(schema.categories).where(and(eq(schema.categories.id, categoryId), eq(schema.categories.userId, userId))).get();
           if (!category) {
             throw new Error(`Category ID ${categoryId} not found or unauthorized`);
@@ -505,6 +560,7 @@ export function createMCPServer(
           const conditions = [
             eq(schema.transactions.userId, userId),
             eq(schema.transactions.isPlanned, 0),
+            eq(schema.transactions.type, "expense"), // Crucial: only count actual expense transactions
             gte(schema.transactions.transactionDate, b.periodStart),
             lte(schema.transactions.transactionDate, b.periodEnd)
           ];
@@ -518,8 +574,8 @@ export function createMCPServer(
           const spent = txs.reduce((sum, tx) => sum + tx.amount, 0);
           statusList.push({
             budget: b,
-            spent,
-            remaining: b.amount - spent,
+            spent: Number(spent.toFixed(2)),
+            remaining: Number((b.amount - spent).toFixed(2)),
             percentUsed: b.amount > 0 ? Number(((spent / b.amount) * 100).toFixed(2)) : 0
           });
         }
@@ -533,15 +589,23 @@ export function createMCPServer(
     if (name === "record_transaction") {
       const { walletId, categoryId, budgetId, amount, type, description, isPlanned, transactionDate } = (args || {}) as any;
       
-      if (typeof amount !== "number" || amount <= 0) {
-        throw new Error("Transaction 'amount' must be a positive number greater than 0");
+      if (!isValidPositiveNumber(amount)) {
+        throw new Error("Validation Error: Transaction 'amount' must be a positive finite number greater than 0");
       }
-      if (!walletId || typeof walletId !== "number") {
-        throw new Error("Valid numeric 'walletId' is required");
+      if (!walletId || typeof walletId !== "number" || !Number.isInteger(walletId)) {
+        throw new Error("Validation Error: Valid integer 'walletId' is required");
       }
-      if (!categoryId || typeof categoryId !== "number") {
-        throw new Error("Valid numeric 'categoryId' is required");
+      if (!categoryId || typeof categoryId !== "number" || !Number.isInteger(categoryId)) {
+        throw new Error("Validation Error: Valid integer 'categoryId' is required");
       }
+      if (transactionDate && !isValidDate(transactionDate)) {
+        throw new Error("Validation Error: 'transactionDate' must be in ISO format (YYYY-MM-DD)");
+      }
+      if (description && (typeof description !== "string" || description.length > 500)) {
+        throw new Error("Validation Error: 'description' cannot exceed 500 characters");
+      }
+
+      const txType = type === "income" ? "income" : "expense";
 
       const wallet = await db.select().from(schema.wallets).where(and(eq(schema.wallets.id, walletId), eq(schema.wallets.userId, userId))).get();
       if (!wallet) throw new Error(`Wallet ID ${walletId} not found or unauthorized`);
@@ -550,13 +614,15 @@ export function createMCPServer(
       if (!category) throw new Error(`Category ID ${categoryId} not found or unauthorized`);
 
       if (budgetId) {
+        if (typeof budgetId !== "number" || !Number.isInteger(budgetId)) {
+          throw new Error("Validation Error: 'budgetId' must be a valid integer");
+        }
         const budget = await db.select().from(schema.budgets).where(and(eq(schema.budgets.id, budgetId), eq(schema.budgets.userId, userId))).get();
         if (!budget) throw new Error(`Budget ID ${budgetId} not found or unauthorized`);
       }
 
       const dateStr = transactionDate || new Date().toISOString().split("T")[0];
       const isPlannedInt = isPlanned ? 1 : 0;
-      const txType = type || "expense";
 
       const tx = await db.insert(schema.transactions).values({
         userId,
@@ -565,20 +631,17 @@ export function createMCPServer(
         budgetId: budgetId || null,
         amount,
         type: txType,
-        description: description || null,
+        description: description ? description.trim() : null,
         isPlanned: isPlannedInt,
         transactionDate: dateStr
       }).returning();
 
-      // Update wallet balance if transaction is actual (isPlanned == 0)
+      // Atomic wallet balance update for actual transactions (isPlanned == 0)
       if (!isPlannedInt) {
-        let newBalance = wallet.balance;
-        if (txType === "expense") newBalance -= amount;
-        else if (txType === "income") newBalance += amount;
-
+        const balanceDelta = txType === "expense" ? -amount : amount;
         await db.update(schema.wallets)
-          .set({ balance: newBalance })
-          .where(eq(schema.wallets.id, walletId));
+          .set({ balance: sql`balance + ${balanceDelta}` })
+          .where(and(eq(schema.wallets.id, walletId), eq(schema.wallets.userId, userId)));
       }
 
       return { content: [{ type: "text", text: JSON.stringify(tx[0], null, 2) }] };
@@ -586,24 +649,32 @@ export function createMCPServer(
 
     // --- Tool: list_transactions ---
     if (name === "list_transactions") {
-      const { walletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit = 50 } = (args || {}) as any;
+      const { walletId, categoryId, budgetId, type, isPlanned, startDate, endDate, limit = 50, offset = 0 } = (args || {}) as any;
       const conditions = [eq(schema.transactions.userId, userId)];
       
-      if (walletId !== undefined) conditions.push(eq(schema.transactions.walletId, walletId));
-      if (categoryId !== undefined) conditions.push(eq(schema.transactions.categoryId, categoryId));
-      if (budgetId !== undefined) conditions.push(eq(schema.transactions.budgetId, budgetId));
-      if (type !== undefined) conditions.push(eq(schema.transactions.type, type));
+      if (walletId !== undefined && typeof walletId === "number") conditions.push(eq(schema.transactions.walletId, walletId));
+      if (categoryId !== undefined && typeof categoryId === "number") conditions.push(eq(schema.transactions.categoryId, categoryId));
+      if (budgetId !== undefined && typeof budgetId === "number") conditions.push(eq(schema.transactions.budgetId, budgetId));
+      if (type !== undefined && (type === "expense" || type === "income")) conditions.push(eq(schema.transactions.type, type));
       if (isPlanned !== undefined) conditions.push(eq(schema.transactions.isPlanned, isPlanned ? 1 : 0));
-      if (startDate !== undefined) conditions.push(gte(schema.transactions.transactionDate, startDate));
-      if (endDate !== undefined) conditions.push(lte(schema.transactions.transactionDate, endDate));
+      if (startDate !== undefined) {
+        if (!isValidDate(startDate)) throw new Error("Validation Error: 'startDate' must be YYYY-MM-DD");
+        conditions.push(gte(schema.transactions.transactionDate, startDate));
+      }
+      if (endDate !== undefined) {
+        if (!isValidDate(endDate)) throw new Error("Validation Error: 'endDate' must be YYYY-MM-DD");
+        conditions.push(lte(schema.transactions.transactionDate, endDate));
+      }
 
       const safeLimit = Math.min(Math.max(1, Number(limit) || 50), 200);
+      const safeOffset = Math.max(0, Number(offset) || 0);
 
       const txs = await db.select()
         .from(schema.transactions)
         .where(and(...conditions))
         .orderBy(desc(schema.transactions.transactionDate), desc(schema.transactions.id))
-        .limit(safeLimit);
+        .limit(safeLimit)
+        .offset(safeOffset);
 
       return { content: [{ type: "text", text: JSON.stringify(txs, null, 2) }] };
     }
@@ -612,9 +683,15 @@ export function createMCPServer(
     if (name === "financial_summary") {
       const { startDate, endDate } = (args || {}) as any;
       
-      // 1. Calculate net worth across all user wallets
+      if (startDate !== undefined && !isValidDate(startDate)) throw new Error("Validation Error: 'startDate' must be YYYY-MM-DD");
+      if (endDate !== undefined && !isValidDate(endDate)) throw new Error("Validation Error: 'endDate' must be YYYY-MM-DD");
+
+      // 1. Group net worth by currency across all user wallets
       const walletsData = await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userId));
-      const netWorth = walletsData.reduce((sum, w) => sum + w.balance, 0);
+      const netWorthByCurrency: Record<string, number> = {};
+      for (const w of walletsData) {
+        netWorthByCurrency[w.currency] = Number(((netWorthByCurrency[w.currency] || 0) + w.balance).toFixed(2));
+      }
 
       // 2. Query non-planned transactions
       const conditions = [
@@ -639,12 +716,12 @@ export function createMCPServer(
         if (tx.type === "expense") {
           totalExpense += tx.amount;
           const catName = categoryMap.get(tx.categoryId) || `Category #${tx.categoryId}`;
-          categoryBreakdown[catName] = (categoryBreakdown[catName] || 0) + tx.amount;
+          categoryBreakdown[catName] = Number(((categoryBreakdown[catName] || 0) + tx.amount).toFixed(2));
         }
       }
 
       const summary = {
-        netWorth: Number(netWorth.toFixed(2)),
+        netWorthByCurrency,
         totalIncome: Number(totalIncome.toFixed(2)),
         totalExpense: Number(totalExpense.toFixed(2)),
         netSavings: Number((totalIncome - totalExpense).toFixed(2)),

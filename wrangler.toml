@@ -2,9 +2,8 @@ name = "finnplan-mcp"
 main = "src/index.ts"
 compatibility_date = "2024-03-20"
 
-# Optional: define dev vars (in production, use: wrangler secret put JWT_SECRET)
-[vars]
-JWT_SECRET = "finnplan-mcp-dev-super-secret-key-change-in-prod"
+# Set secrets for local dev via .dev.vars (gitignored)
+# Set secrets for production via: wrangler secret put JWT_SECRET
 
 [[d1_databases]]
 binding = "DB"

@@ -1,23 +1,28 @@
 import { sign, verify } from 'hono/jwt';
 import type { JWTPayload } from 'hono/utils/jwt/types';
 
-export const DEFAULT_DEV_JWT_SECRET = 'finnplan-mcp-dev-super-secret-key-change-in-prod';
 export const DEFAULT_TOKEN_EXPIRY_SECONDS = 15 * 60; // 15 minutes (900 seconds)
+export const MAX_TOKEN_EXPIRY_SECONDS = 24 * 60 * 60; // 24 hours
+export const MIN_TOKEN_EXPIRY_SECONDS = 60; // 1 minute
+export const TOKEN_ISSUER = 'eve-finance-mcp';
+export const TOKEN_AUDIENCE = 'eve-finance-client';
 
 export interface UserTokenPayload extends JWTPayload {
   sub: string;
   name?: string;
   email?: string;
-  iat?: number;
-  exp?: number;
+  iss: string;
+  aud: string;
+  iat: number;
+  exp: number;
 }
 
 /**
- * Validate standard email format (e.g. user@example.com).
+ * Validate standard email format (RFC 5322 compliant pattern).
  */
 export function isValidEmail(email: string): boolean {
   if (!email || typeof email !== 'string') return false;
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
   return emailRegex.test(email.trim());
 }
 
@@ -32,6 +37,19 @@ export function isValidWhatsApp(phone: string): boolean {
 }
 
 /**
+ * Compute SHA-256 hash of an API key for safe database storage and lookup.
+ */
+export async function hashApiKey(apiKey: string): Promise<string> {
+  if (!apiKey || typeof apiKey !== 'string') {
+    throw new Error('API key must be a non-empty string');
+  }
+  const msgBuffer = new TextEncoder().encode(apiKey.trim());
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
  * Generate a cryptographically secure random API key with 'fp_live_' prefix.
  */
 export function generateApiKey(): string {
@@ -41,16 +59,16 @@ export function generateApiKey(): string {
 }
 
 /**
- * Generate a unique user ID with 'usr_' prefix.
+ * Generate a unique user ID with 'usr_' prefix using crypto.randomUUID.
  */
 export function generateUserId(): string {
-  const bytes = new Uint8Array(8);
-  crypto.getRandomValues(bytes);
-  return `usr_${Date.now().toString(36)}_${Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')}`;
+  const uuid = crypto.randomUUID().replace(/-/g, '').slice(0, 16);
+  return `usr_${Date.now().toString(36)}_${uuid}`;
 }
 
 /**
- * Generate a signed self-contained JWT token for a user with default 15-minute expiration.
+ * Generate a signed self-contained JWT token for a user.
+ * Requires an explicit secret string (no silent default).
  *
  * @param params User info and optional expiration time (in seconds from now)
  * @param secret Secret key for HMAC-SHA256 signature
@@ -62,17 +80,28 @@ export async function generateUserToken(
     email?: string;
     expiresInSeconds?: number;
   },
-  secret: string = DEFAULT_DEV_JWT_SECRET
+  secret: string
 ): Promise<string> {
+  if (!secret || typeof secret !== 'string' || secret.trim() === '') {
+    throw new Error('Server configuration error: JWT_SECRET is required to sign tokens');
+  }
+  if (!params.userId || typeof params.userId !== 'string' || params.userId.trim() === '') {
+    throw new Error('Validation error: Valid userId is required to generate a token');
+  }
+
   const now = Math.floor(Date.now() / 1000);
-  const expiry = params.expiresInSeconds !== undefined ? params.expiresInSeconds : DEFAULT_TOKEN_EXPIRY_SECONDS;
+  const requestedExpiry = params.expiresInSeconds !== undefined ? params.expiresInSeconds : DEFAULT_TOKEN_EXPIRY_SECONDS;
+  // Clamp expiry between min and max bounds
+  const clampedExpiry = Math.min(Math.max(MIN_TOKEN_EXPIRY_SECONDS, requestedExpiry), MAX_TOKEN_EXPIRY_SECONDS);
 
   const payload: UserTokenPayload = {
-    sub: params.userId,
-    name: params.name,
-    email: params.email,
+    sub: params.userId.trim(),
+    name: params.name?.trim(),
+    email: params.email?.trim().toLowerCase(),
+    iss: TOKEN_ISSUER,
+    aud: TOKEN_AUDIENCE,
     iat: now,
-    exp: now + expiry,
+    exp: now + clampedExpiry,
   };
 
   return sign(payload, secret, 'HS256');
@@ -80,22 +109,32 @@ export async function generateUserToken(
 
 /**
  * Cryptographically verify a JWT Bearer token and extract user information.
- * Does NOT require any database query.
+ * Requires an explicit secret string.
  *
  * @param token Raw JWT string
  * @param secret Secret key for HMAC-SHA256 signature
  */
 export async function verifyUserToken(
   token: string,
-  secret: string = DEFAULT_DEV_JWT_SECRET
+  secret: string
 ): Promise<{ userId: string; name?: string; email?: string } | null> {
+  if (!token || typeof token !== 'string' || !secret || typeof secret !== 'string') {
+    return null;
+  }
+
   try {
-    const payload = (await verify(token, secret, 'HS256')) as UserTokenPayload;
-    if (!payload || !payload.sub) {
+    const payload = (await verify(token.trim(), secret, 'HS256')) as UserTokenPayload;
+    if (
+      !payload ||
+      typeof payload.sub !== 'string' ||
+      payload.sub.trim() === '' ||
+      payload.iss !== TOKEN_ISSUER ||
+      payload.aud !== TOKEN_AUDIENCE
+    ) {
       return null;
     }
     return {
-      userId: payload.sub,
+      userId: payload.sub.trim(),
       name: payload.name,
       email: payload.email,
     };
