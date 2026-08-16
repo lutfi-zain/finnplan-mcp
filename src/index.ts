@@ -82,6 +82,18 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
     return c.json({ error: 'Server Misconfiguration: Database (DB) binding is missing' }, 500);
   }
 
+  // If a browser/tool performs a plain GET without SSE Accept header, return friendly info
+  const rawAccept = c.req.header('accept') || '';
+  if (c.req.method === 'GET' && !rawAccept.includes('text/event-stream') && !rawAccept.includes('*/*')) {
+    return c.json({
+      name: 'eve-finance-mcp',
+      status: 'ok',
+      transport: 'streamable-http',
+      endpoint: c.req.url,
+      tip: 'Connect via an MCP client with Streamable HTTP or SSE transport.',
+    });
+  }
+
   const userId = await extractAuthenticatedUserId(c);
   const db = drizzle(c.env.DB, { schema });
 
@@ -94,12 +106,52 @@ async function handleMcpRequest(c: Context<{ Bindings: Bindings }>) {
   const mcpServer = createMCPServer(db, userId, secret);
   await mcpServer.connect(transport);
 
-  return transport.handleRequest(c.req.raw);
+  // Normalize Request headers for maximum compatibility across various MCP clients
+  const headers = new Headers(c.req.raw.headers);
+  if (c.req.method === 'POST') {
+    headers.set('accept', 'application/json, text/event-stream');
+    const ct = headers.get('content-type') || '';
+    if (!ct.includes('application/json')) {
+      headers.set('content-type', 'application/json');
+    }
+  } else if (c.req.method === 'GET') {
+    headers.set('accept', 'text/event-stream');
+  }
+
+  // Safely parse body once for POST requests
+  let parsedBody: unknown = undefined;
+  if (c.req.method === 'POST') {
+    try {
+      parsedBody = await c.req.json();
+    } catch {
+      // Empty or non-JSON body - transport will handle error formatting
+    }
+  }
+
+  const normalizedRequest = new Request(c.req.raw.url, {
+    method: c.req.method,
+    headers,
+  });
+
+  const response = await transport.handleRequest(normalizedRequest, { parsedBody });
+
+  // Ensure empty responses (such as 202 Accepted on notifications or DELETE) return valid JSON body
+  // to avoid "JSON Parse error: Unexpected EOF" on clients that call res.json() unconditionally.
+  if (response.status === 202 || response.status === 204 || (!response.body && response.status === 200)) {
+    const resHeaders = new Headers(response.headers);
+    resHeaders.set('content-type', 'application/json');
+    return new Response(JSON.stringify({ jsonrpc: '2.0', result: {} }), {
+      status: 200,
+      headers: resHeaders,
+    });
+  }
+
+  return response;
 }
 
-// Mount explicitly on allowed methods
-app.post('/mcp', handleMcpRequest);
-app.get('/sse', handleMcpRequest);
-app.post('/sse', handleMcpRequest);
+// Mount across all relevant routes and methods
+app.all('/mcp', handleMcpRequest);
+app.all('/sse', handleMcpRequest);
+app.post('/', handleMcpRequest);
 
 export default app;
