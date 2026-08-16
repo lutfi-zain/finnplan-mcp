@@ -1,8 +1,8 @@
 {
   "name": "finnplan-mcp",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Stateless MCP Server for Eve Finance on Cloudflare Workers (D1)",
+  "main": "src/index.ts",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
@@ -10,9 +10,17 @@
     "build": "wrangler deploy --dry-run",
     "test": "tsx --test tests/mcp.test.ts",
     "token:create": "tsx scripts/generate-token.ts",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 execute finance_db --local --file=./drizzle/0000_real_rocket_racer.sql",
+    "db:migrate:remote": "wrangler d1 execute finance_db --remote --file=./drizzle/0000_real_rocket_racer.sql"
   },
-  "keywords": [],
+  "keywords": [
+    "mcp",
+    "cloudflare-workers",
+    "d1",
+    "drizzle-orm",
+    "finance"
+  ],
   "author": "",
   "license": "ISC",
   "type": "commonjs",

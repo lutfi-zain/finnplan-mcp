@@ -9,5 +9,5 @@ JWT_SECRET = "finnplan-mcp-dev-super-secret-key-change-in-prod"
 [[d1_databases]]
 binding = "DB"
 database_name = "finance_db"
-database_id = "xxxx-xxxx-xxxx-xxxx"
+database_id = "f3be3b45-d0fb-4b7e-b776-4d4706112c3b"
 migrations_dir = "drizzle"
