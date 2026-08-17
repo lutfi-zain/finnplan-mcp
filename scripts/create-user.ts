@@ -61,7 +61,7 @@ async function main() {
   console.log(`🔑 API Key:  ${apiKey}\n`);
 
   // Insert into SQLite D1 database
-  const insertSql = `INSERT INTO users (id, first_name, last_name, email, whatsapp_number, api_key_hash) VALUES ('${userId}', '${firstName}', '${lastName}', '${email}', '${phone}', '${apiKeyHash}');`;
+  const insertSql = `INSERT INTO users (user_id, user_first_name, user_last_name, user_email, user_whatsapp_number, user_api_key_hash) VALUES ('${userId}', '${firstName}', '${lastName}', '${email}', '${phone}', '${apiKeyHash}');`;
   const remoteFlag = isRemote ? '--remote' : '--local';
 
   console.log(`⏳ Inserting user into ${targetEnv} D1 database...`);

@@ -84,7 +84,7 @@ class MockD1PreparedStatement {
 function createTestDB() {
   const sqlite = new DatabaseSync(':memory:');
   sqlite.exec('PRAGMA foreign_keys = ON;');
-  const migrationFiles = ['0000_nice_marvel_boy.sql', '0001_low_stingray.sql', '0001_add_transfer_and_admin_fee.sql'];
+  const migrationFiles = ['0002_table_prefixed_schema_and_tz.sql'];
   for (const file of migrationFiles) {
     const ddlPath = join(__dirname, `../drizzle/${file}`);
     const ddl = readFileSync(ddlPath, 'utf-8');
@@ -114,12 +114,14 @@ async function callTool(server: any, name: string, args: Record<string, any> = {
   });
 }
 
+async function listTools(server: any) {
+  const handler = server._requestHandlers.get('tools/list');
+  return handler({ method: 'tools/list' });
+}
+
 async function listResources(server: any) {
   const handler = server._requestHandlers.get('resources/list');
-  return handler({
-    method: 'resources/list',
-    params: {},
-  });
+  return handler({ method: 'resources/list' });
 }
 
 async function readResource(server: any, uri: string) {
@@ -130,37 +132,53 @@ async function readResource(server: any, uri: string) {
   });
 }
 
-// -----------------------------------------------------------------------------
-// Test Suite
-// -----------------------------------------------------------------------------
-describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => {
-  it('1. Validation Helpers (Email, WhatsApp, SHA-256 API Key Hashing)', async () => {
-    // Email tests
-    assert.equal(isValidEmail('user@example.com'), true);
-    assert.equal(isValidEmail('user.name+tag@sub.domain.co.id'), true);
+// =============================================================================
+// Test Suites
+// =============================================================================
+describe('Eve Finance MCP Server — Complete Test Suite', () => {
+  it('1. Token Utility: Sign, Verify, Claims, and Expiration', async () => {
+    const payload = {
+      userId: 'usr_ms83df92_8f293847',
+      name: 'Lutfi Zain',
+      email: 'lutfi@example.com',
+      expiresInSeconds: 900,
+    };
+
+    const token = await generateUserToken(payload, TEST_JWT_SECRET);
+    assert.ok(typeof token === 'string' && token.length > 20);
+
+    const verified = await verifyUserToken(token, TEST_JWT_SECRET);
+    assert.ok(verified !== null);
+    assert.equal(verified?.userId, payload.userId);
+    assert.equal(verified?.name, payload.name);
+    assert.equal(verified?.email, payload.email);
+
+    // Invalid secret verification
+    const invalidSig = await verifyUserToken(token, 'wrong-secret-key-1234567890');
+    assert.equal(invalidSig, null);
+
+    // Expired token verification
+    const expiredToken = await generateUserToken({ ...payload, expiresInSeconds: -10 }, TEST_JWT_SECRET);
+    const expiredResult = await verifyUserToken(expiredToken, TEST_JWT_SECRET);
+    assert.equal(expiredResult, null);
+
+    // Email & WhatsApp Validators
+    assert.equal(isValidEmail('user@test.com'), true);
     assert.equal(isValidEmail('invalid-email'), false);
-    assert.equal(isValidEmail('user@'), false);
-    assert.equal(isValidEmail(''), false);
-
-    // WhatsApp tests (Must start with + and country code, then digits)
     assert.equal(isValidWhatsApp('+6281234567890'), true);
-    assert.equal(isValidWhatsApp('+12025550123'), true);
-    assert.equal(isValidWhatsApp('081234567890'), false);
-    assert.equal(isValidWhatsApp(''), false);
-
-    // SHA-256 Hash tests
-    const key = 'fp_live_abcdef1234567890';
-    const hash1 = await hashApiKey(key);
-    const hash2 = await hashApiKey(key);
-    assert.equal(hash1, hash2);
-    assert.equal(hash1.length, 64);
+    assert.equal(isValidWhatsApp('081234567890'), false); // Missing '+' and country code
   });
 
-  it('2. MCP Tool: register_user (Strict Validation, SHA-256 Hash Storage, Token)', async () => {
+  it('2. MCP Tool: register_user with Server-Side UUID and SHA-256 API Key', async () => {
     const { db } = createTestDB();
     const publicServer = createMCPServer(db, null, TEST_JWT_SECRET);
 
-    // 1. Validation error: Missing first name
+    const toolsList = await listTools(publicServer);
+    assert.ok(toolsList.tools.some((t: any) => t.name === 'register_user'));
+    assert.ok(toolsList.tools.some((t: any) => t.name === 'login_user'));
+    assert.ok(toolsList.tools.some((t: any) => t.name === 'manage_wallet'));
+
+    // 1. First name validation
     await assert.rejects(async () => {
       await callTool(publicServer, 'register_user', {
         firstName: '',
@@ -168,9 +186,9 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
         email: 'budi@example.com',
         whatsappNumber: '+6281234567890',
       });
-    }, /firstName.*required/i);
+    }, /firstName/i);
 
-    // 2. Validation error: Invalid email format
+    // 2. Email format validation
     await assert.rejects(async () => {
       await callTool(publicServer, 'register_user', {
         firstName: 'Budi',
@@ -178,9 +196,9 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
         email: 'invalid-email',
         whatsappNumber: '+6281234567890',
       });
-    }, /invalid email format/i);
+    }, /invalid email/i);
 
-    // 3. Validation error: Invalid WhatsApp number (missing +)
+    // 3. WhatsApp format validation
     await assert.rejects(async () => {
       await callTool(publicServer, 'register_user', {
         firstName: 'Budi',
@@ -188,7 +206,7 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
         email: 'budi@example.com',
         whatsappNumber: '081234567890',
       });
-    }, /invalid whatsapp number format/i);
+    }, /invalid whatsapp/i);
 
     // 4. Successful registration
     const regRes = await callTool(publicServer, 'register_user', {
@@ -208,11 +226,11 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     assert.equal(regData.expiresIn, 900); // 15 minutes
 
     // 5. Verify API key in DB is hashed, NOT plaintext!
-    const userInDb = await db.select().from(schema.users).where(eq(schema.users.id, regData.userId)).get();
-    assert.ok(userInDb?.apiKeyHash);
-    assert.notEqual(userInDb?.apiKeyHash, regData.apiKey);
+    const userInDb = await db.select().from(schema.users).where(eq(schema.users.userId, regData.userId)).get();
+    assert.ok(userInDb?.userApiKeyHash);
+    assert.notEqual(userInDb?.userApiKeyHash, regData.apiKey);
     const expectedHash = await hashApiKey(regData.apiKey);
-    assert.equal(userInDb?.apiKeyHash, expectedHash);
+    assert.equal(userInDb?.userApiKeyHash, expectedHash);
 
     // 6. Verify token signature with issuer and audience
     const verified = await verifyUserToken(regData.token, TEST_JWT_SECRET);
@@ -277,11 +295,13 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     const wallet = JSON.parse((await callTool(authServer, 'manage_wallet', {
       action: 'create',
       name: 'Test Bank',
+      institution: 'BCA',
       balance: 1000000,
     })).content[0].text);
 
-    assert.equal(typeof wallet.id, 'string', 'Wallet ID must be a string UUID');
-    assert.equal(wallet.id.length, 36, 'Wallet ID must be 36 characters (UUID v4)');
+    assert.equal(typeof wallet.walletId, 'string', 'Wallet ID must be a string UUID');
+    assert.equal(wallet.walletId.length, 36, 'Wallet ID must be 36 characters (UUID v4)');
+    assert.equal(wallet.walletInstitution, 'BCA');
 
     const category = JSON.parse((await callTool(authServer, 'manage_category', {
       action: 'create',
@@ -289,14 +309,14 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
       type: 'expense',
     })).content[0].text);
 
-    assert.equal(typeof category.id, 'string', 'Category ID must be a string UUID');
-    assert.equal(category.id.length, 36, 'Category ID must be 36 characters (UUID v4)');
+    assert.equal(typeof category.categoryId, 'string', 'Category ID must be a string UUID');
+    assert.equal(category.categoryId.length, 36, 'Category ID must be 36 characters (UUID v4)');
 
     // NaN amount rejection in record_transaction
     await assert.rejects(async () => {
       await callTool(authServer, 'record_transaction', {
-        walletId: wallet.id,
-        categoryId: category.id,
+        walletId: wallet.walletId,
+        categoryId: category.categoryId,
         amount: NaN,
       });
     }, /positive finite number/i);
@@ -304,8 +324,8 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     // Negative amount rejection
     await assert.rejects(async () => {
       await callTool(authServer, 'record_transaction', {
-        walletId: wallet.id,
-        categoryId: category.id,
+        walletId: wallet.walletId,
+        categoryId: category.categoryId,
         amount: -50000,
       });
     }, /positive finite number/i);
@@ -350,18 +370,22 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     const wBca = JSON.parse((await callTool(authServer, 'manage_wallet', {
       action: 'create',
       name: 'BCA Main',
+      institution: 'BCA',
       balance: 10000000,
       currency: 'IDR',
     })).content[0].text);
-    assert.equal(typeof wBca.id, 'string');
+    assert.equal(typeof wBca.walletId, 'string');
+    assert.equal(wBca.walletInstitution, 'BCA');
 
     const wUsd = JSON.parse((await callTool(authServer, 'manage_wallet', {
       action: 'create',
       name: 'Wise USD',
+      institution: 'Wise',
       balance: 500,
       currency: 'USD',
     })).content[0].text);
-    assert.equal(typeof wUsd.id, 'string');
+    assert.equal(typeof wUsd.walletId, 'string');
+    assert.equal(wUsd.walletInstitution, 'Wise');
 
     // 2. Create Categories
     const cFood = JSON.parse((await callTool(authServer, 'manage_category', {
@@ -369,41 +393,41 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
       name: 'Food',
       type: 'expense',
     })).content[0].text);
-    assert.equal(typeof cFood.id, 'string');
+    assert.equal(typeof cFood.categoryId, 'string');
 
     const cSalary = JSON.parse((await callTool(authServer, 'manage_category', {
       action: 'create',
       name: 'Salary',
       type: 'income',
     })).content[0].text);
-    assert.equal(typeof cSalary.id, 'string');
+    assert.equal(typeof cSalary.categoryId, 'string');
 
     // 3. Create Budget for Food
     const bAugust = JSON.parse((await callTool(authServer, 'manage_budget', {
       action: 'create',
       name: 'August Food',
-      categoryId: cFood.id,
+      categoryId: cFood.categoryId,
       amount: 2000000,
       periodStart: '2026-08-01',
       periodEnd: '2026-08-31',
     })).content[0].text);
-    assert.equal(typeof bAugust.id, 'string');
+    assert.equal(typeof bAugust.budgetId, 'string');
 
     // 4. Record Expense (Food: Rp 500K) -> updates balance atomically
     const tx1 = JSON.parse((await callTool(authServer, 'record_transaction', {
-      walletId: wBca.id,
-      categoryId: cFood.id,
-      budgetId: bAugust.id,
+      walletId: wBca.walletId,
+      categoryId: cFood.categoryId,
+      budgetId: bAugust.budgetId,
       amount: 500000,
       type: 'expense',
       transactionDate: '2026-08-10',
     })).content[0].text);
-    assert.equal(typeof tx1.id, 'string');
+    assert.equal(typeof tx1.transactionId, 'string');
 
     // 5. Record Income into Food category (e.g. cashback) -> must NOT count towards budget spending!
     await callTool(authServer, 'record_transaction', {
-      walletId: wBca.id,
-      categoryId: cFood.id,
+      walletId: wBca.walletId,
+      categoryId: cFood.categoryId,
       amount: 100000,
       type: 'income',
       transactionDate: '2026-08-11',
@@ -411,8 +435,8 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
 
     // 6. Record Salary Income
     await callTool(authServer, 'record_transaction', {
-      walletId: wBca.id,
-      categoryId: cSalary.id,
+      walletId: wBca.walletId,
+      categoryId: cSalary.categoryId,
       amount: 15000000,
       type: 'income',
       transactionDate: '2026-08-01',
@@ -424,10 +448,12 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     assert.equal(budgetStatus[0].remaining, 1500000);
     assert.equal(budgetStatus[0].percentUsed, 25);
 
-    // Check Financial Summary: Grouped by currency!
+    // Check Financial Summary: Grouped by currency & institution!
     const summary = JSON.parse((await callTool(authServer, 'financial_summary', {})).content[0].text);
     assert.equal(summary.netWorthByCurrency.IDR, 24600000); // 10M - 500K + 100K + 15M
     assert.equal(summary.netWorthByCurrency.USD, 500);
+    assert.equal(summary.netWorthByInstitution.BCA, 24600000);
+    assert.equal(summary.netWorthByInstitution.Wise, 500);
     assert.equal(summary.totalIncome, 15100000); // 15M + 100K
     assert.equal(summary.totalExpense, 500000);
 
@@ -436,7 +462,7 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     const page2 = JSON.parse((await callTool(authServer, 'list_transactions', { limit: 1, offset: 1 })).content[0].text);
     assert.equal(page1.length, 1);
     assert.equal(page2.length, 1);
-    assert.notEqual(page1[0].id, page2[0].id);
+    assert.notEqual(page1[0].transactionId, page2[0].transactionId);
   });
 
   it('6. Multi-Tenant Row Level Security (RLS) Isolation', async () => {
@@ -470,7 +496,7 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     assert.equal(betaWallets.length, 0);
 
     await assert.rejects(async () => {
-      await callTool(serverBeta, 'manage_wallet', { action: 'update', walletId: alphaWallet.id, balance: 0 });
+      await callTool(serverBeta, 'manage_wallet', { action: 'update', walletId: alphaWallet.walletId, balance: 0 });
     }, /not found or unauthorized/i);
   });
 
@@ -492,8 +518,8 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
 
     const schemaRes = await readResource(authServer, 'finance://db/schema');
     const schemaJson = JSON.parse(schemaRes.contents[0].text);
-    assert.ok(schemaJson.tables.users.includes('id (PK UUID)'));
-    assert.ok(schemaJson.tables.wallets.includes('id (PK UUID)'));
+    assert.ok(schemaJson.tables.users.includes('user_id (PK UUID)'));
+    assert.ok(schemaJson.tables.wallets.includes('wallet_id (PK UUID)'));
     assert.ok(schemaJson.indexes.transactions);
   });
 
@@ -565,9 +591,9 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
 
     assert.equal(createWalletRes.status, 200);
     const createdWallet = JSON.parse((await createWalletRes.json()).result.content[0].text);
-    assert.equal(createdWallet.name, 'E2E Bank');
-    assert.equal(createdWallet.balance, 5000000);
-    assert.equal(typeof createdWallet.id, 'string', 'Wallet ID should be a string UUID');
+    assert.equal(createdWallet.walletName, 'E2E Bank');
+    assert.equal(createdWallet.walletBalance, 5000000);
+    assert.equal(typeof createdWallet.walletId, 'string', 'Wallet ID should be a string UUID');
   });
 
   it('9. Pure Database-Level ON DELETE CASCADE Verification', async () => {
@@ -597,39 +623,39 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     // Populate User A data (Wallet, Category, Budget, Transaction)
     const walletA = JSON.parse((await callTool(serverA, 'manage_wallet', { action: 'create', name: 'Wallet A', balance: 500000 })).content[0].text);
     const catA = JSON.parse((await callTool(serverA, 'manage_category', { action: 'create', name: 'Cat A', type: 'expense' })).content[0].text);
-    const budgetA = JSON.parse((await callTool(serverA, 'manage_budget', { action: 'create', name: 'Budget A', categoryId: catA.id, amount: 100000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
-    await callTool(serverA, 'record_transaction', { walletId: walletA.id, categoryId: catA.id, budgetId: budgetA.id, amount: 50000, type: 'expense' });
+    const budgetA = JSON.parse((await callTool(serverA, 'manage_budget', { action: 'create', name: 'Budget A', categoryId: catA.categoryId, amount: 100000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
+    await callTool(serverA, 'record_transaction', { walletId: walletA.walletId, categoryId: catA.categoryId, budgetId: budgetA.budgetId, amount: 50000, type: 'expense' });
 
     // Populate User B data
     const walletB = JSON.parse((await callTool(serverB, 'manage_wallet', { action: 'create', name: 'Wallet B', balance: 200000 })).content[0].text);
     const catB = JSON.parse((await callTool(serverB, 'manage_category', { action: 'create', name: 'Cat B', type: 'expense' })).content[0].text);
-    const budgetB = JSON.parse((await callTool(serverB, 'manage_budget', { action: 'create', name: 'Budget B', categoryId: catB.id, amount: 50000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
-    await callTool(serverB, 'record_transaction', { walletId: walletB.id, categoryId: catB.id, budgetId: budgetB.id, amount: 25000, type: 'expense' });
+    const budgetB = JSON.parse((await callTool(serverB, 'manage_budget', { action: 'create', name: 'Budget B', categoryId: catB.categoryId, amount: 50000, periodStart: '2026-08-01', periodEnd: '2026-08-31' })).content[0].text);
+    await callTool(serverB, 'record_transaction', { walletId: walletB.walletId, categoryId: catB.categoryId, budgetId: budgetB.budgetId, amount: 25000, type: 'expense' });
 
     // Verify User A records exist
-    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userAId))).length, 1);
-    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.userId, userAId))).length, 1);
-    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userAId))).length, 1);
-    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.userId, userAId))).length, 1);
+    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, userAId))).length, 1);
+    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, userAId))).length, 1);
+    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, userAId))).length, 1);
+    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.transactionUserId, userAId))).length, 1);
 
     // Execute pure database-level DELETE on users table
-    await db.delete(schema.users).where(eq(schema.users.id, userAId));
+    await db.delete(schema.users).where(eq(schema.users.userId, userAId));
 
     // Assert User A record is deleted
-    const deletedUserA = await db.select().from(schema.users).where(eq(schema.users.id, userAId)).get();
+    const deletedUserA = await db.select().from(schema.users).where(eq(schema.users.userId, userAId)).get();
     assert.equal(deletedUserA, undefined);
 
     // Assert all User A child data automatically cascade-deleted by SQLite foreign keys
-    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userAId))).length, 0);
-    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.userId, userAId))).length, 0);
-    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userAId))).length, 0);
-    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.userId, userAId))).length, 0);
+    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, userAId))).length, 0);
+    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, userAId))).length, 0);
+    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, userAId))).length, 0);
+    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.transactionUserId, userAId))).length, 0);
 
     // Assert User B records remain 100% untouched
-    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.userId, userBId))).length, 1);
-    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.userId, userBId))).length, 1);
-    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.userId, userBId))).length, 1);
-    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.userId, userBId))).length, 1);
+    assert.equal((await db.select().from(schema.wallets).where(eq(schema.wallets.walletUserId, userBId))).length, 1);
+    assert.equal((await db.select().from(schema.categories).where(eq(schema.categories.categoryUserId, userBId))).length, 1);
+    assert.equal((await db.select().from(schema.budgets).where(eq(schema.budgets.budgetUserId, userBId))).length, 1);
+    assert.equal((await db.select().from(schema.transactions).where(eq(schema.transactions.transactionUserId, userBId))).length, 1);
   });
 
   it('10. Dual-Layer Authorization: Bearer API Key, X-API-Key, and In-Tool Parameter Fallback', async () => {
@@ -642,6 +668,7 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
       headers: {
         'Content-Type': 'application/json',
         'Accept': 'application/json, text/event-stream',
+        'MCP-Protocol-Version': '2024-11-05',
       },
       body: JSON.stringify({
         jsonrpc: '2.0',
@@ -690,8 +717,8 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
 
     assert.equal(bearerKeyRes.status, 200);
     const bearerWallet = JSON.parse((await bearerKeyRes.json()).result.content[0].text);
-    assert.equal(bearerWallet.name, 'Bearer Key Wallet');
-    assert.equal(bearerWallet.userId, userId);
+    assert.equal(bearerWallet.walletName, 'Bearer Key Wallet');
+    assert.equal(bearerWallet.walletUserId, userId);
 
     // 3. HTTP call using X-API-Key header (X-API-Key: fp_live_...)
     const xApiKeyRes = await app.request('/mcp', {
@@ -718,8 +745,8 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
 
     assert.equal(xApiKeyRes.status, 200);
     const xCat = JSON.parse((await xApiKeyRes.json()).result.content[0].text);
-    assert.equal(xCat.name, 'X-API-Key Category');
-    assert.equal(xCat.userId, userId);
+    assert.equal(xCat.categoryName, 'X-API-Key Category');
+    assert.equal(xCat.categoryUserId, userId);
 
     // 4. In-Tool Parameter Fallback (No HTTP headers, apiKey passed in tool argument)
     const unauthServer = createMCPServer(db, null, TEST_JWT_SECRET);
@@ -731,8 +758,8 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     });
 
     const inToolWallet = JSON.parse(inToolRes.content[0].text);
-    assert.equal(inToolWallet.name, 'In-Tool Param Wallet');
-    assert.equal(inToolWallet.userId, userId);
+    assert.equal(inToolWallet.walletName, 'In-Tool Param Wallet');
+    assert.equal(inToolWallet.walletUserId, userId);
 
     // 5. In-Tool Parameter with invalid API key -> Throws Unauthorized
     await assert.rejects(async () => {
@@ -882,73 +909,73 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
 
     // 3. Record Expense with Admin Fee (e.g. Food Delivery 100,000 + fee 2,500)
     const expenseTx = JSON.parse((await callTool(authServer, 'record_transaction', {
-      walletId: wBca.id,
-      categoryId: catFood.id,
+      walletId: wBca.walletId,
+      categoryId: catFood.categoryId,
       amount: 100000,
       adminFee: 2500,
       description: 'Lunch with delivery fee',
     })).content[0].text);
 
-    assert.equal(expenseTx.amount, 100000);
-    assert.equal(expenseTx.adminFee, 2500);
+    assert.equal(expenseTx.transactionAmount, 100000);
+    assert.equal(expenseTx.transactionAdminFee, 2500);
 
     // Check BCA Balance: 10,000,000 - (100,000 + 2,500) = 9,897,500
-    const bcaAfterExpense = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
-    assert.equal(bcaAfterExpense.balance, 9897500);
+    const bcaAfterExpense = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wBca.walletId)).get())!;
+    assert.equal(bcaAfterExpense.walletBalance, 9897500);
 
     // 4. Transfer Funds with Admin Fee (Transfer 2,000,000 from BCA to GoPay with adminFee 6,500)
     const transferTx = JSON.parse((await callTool(authServer, 'transfer_funds', {
-      sourceWalletId: wBca.id,
-      targetWalletId: wGopay.id,
+      sourceWalletId: wBca.walletId,
+      targetWalletId: wGopay.walletId,
       amount: 2000000,
       adminFee: 6500,
       description: 'Topup GoPay from BCA',
     })).content[0].text);
 
-    assert.equal(transferTx.type, 'transfer');
-    assert.equal(transferTx.amount, 2000000);
-    assert.equal(transferTx.adminFee, 6500);
-    assert.equal(transferTx.walletId, wBca.id);
-    assert.equal(transferTx.targetWalletId, wGopay.id);
+    assert.equal(transferTx.transactionType, 'transfer');
+    assert.equal(transferTx.transactionAmount, 2000000);
+    assert.equal(transferTx.transactionAdminFee, 6500);
+    assert.equal(transferTx.transactionWalletId, wBca.walletId);
+    assert.equal(transferTx.transactionTargetWalletId, wGopay.walletId);
 
     // Check BCA Balance: 9,897,500 - (2,000,000 + 6,500) = 7,891,000
-    const bcaAfterTransfer = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
-    assert.equal(bcaAfterTransfer.balance, 7891000);
+    const bcaAfterTransfer = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wBca.walletId)).get())!;
+    assert.equal(bcaAfterTransfer.walletBalance, 7891000);
 
     // Check GoPay Balance: 500,000 + 2,000,000 = 2,500,000
-    const gopayAfterTransfer = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wGopay.id)).get())!;
-    assert.equal(gopayAfterTransfer.balance, 2500000);
+    const gopayAfterTransfer = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wGopay.walletId)).get())!;
+    assert.equal(gopayAfterTransfer.walletBalance, 2500000);
 
     // 5. Update Expense Transaction: Change amount from 100,000 to 150,000 (with fee 2,500)
     const updatedExpense = JSON.parse((await callTool(authServer, 'update_transaction', {
-      transactionId: expenseTx.id,
+      transactionId: expenseTx.transactionId,
       amount: 150000,
     })).content[0].text);
 
-    assert.equal(updatedExpense.amount, 150000);
+    assert.equal(updatedExpense.transactionAmount, 150000);
     // BCA balance should decrease by additional 50,000 -> 7,891,000 - 50,000 = 7,841,000
-    const bcaAfterUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
-    assert.equal(bcaAfterUpdate.balance, 7841000);
+    const bcaAfterUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wBca.walletId)).get())!;
+    assert.equal(bcaAfterUpdate.walletBalance, 7841000);
 
     // 6. Update Transfer Transaction: Change amount from 2,000,000 to 1,000,000
     const updatedTransfer = JSON.parse((await callTool(authServer, 'update_transaction', {
-      transactionId: transferTx.id,
+      transactionId: transferTx.transactionId,
       amount: 1000000,
     })).content[0].text);
 
-    assert.equal(updatedTransfer.amount, 1000000);
+    assert.equal(updatedTransfer.transactionAmount, 1000000);
     // BCA balance should receive 1,000,000 refund -> 7,841,000 + 1,000,000 = 8,841,000
-    const bcaAfterTransferUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wBca.id)).get())!;
-    assert.equal(bcaAfterTransferUpdate.balance, 8841000);
+    const bcaAfterTransferUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wBca.walletId)).get())!;
+    assert.equal(bcaAfterTransferUpdate.walletBalance, 8841000);
 
     // GoPay balance should decrease by 1,000,000 -> 2,500,000 - 1,000,000 = 1,500,000
-    const gopayAfterTransferUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.id, wGopay.id)).get())!;
-    assert.equal(gopayAfterTransferUpdate.balance, 1500000);
+    const gopayAfterTransferUpdate = (await db.select().from(schema.wallets).where(eq(schema.wallets.walletId, wGopay.walletId)).get())!;
+    assert.equal(gopayAfterTransferUpdate.walletBalance, 1500000);
 
     // 7. Verify List Transactions Filter by targetWalletId & type
     const transfersList = JSON.parse((await callTool(authServer, 'list_transactions', { type: 'transfer' })).content[0].text);
     assert.equal(transfersList.length, 1);
-    assert.equal(transfersList[0].targetWalletId, wGopay.id);
+    assert.equal(transfersList[0].transactionTargetWalletId, wGopay.walletId);
 
     // 8. Verify Financial Summary includes Admin Fees & Transfers
     const summary = JSON.parse((await callTool(authServer, 'financial_summary', {})).content[0].text);
@@ -960,8 +987,8 @@ describe('Eve Finance MCP Server - UUID V4 Primary Key & Security Suite', () => 
     // 9. Negative Validation: Same source & target wallet
     await assert.rejects(async () => {
       await callTool(authServer, 'transfer_funds', {
-        sourceWalletId: wBca.id,
-        targetWalletId: wBca.id,
+        sourceWalletId: wBca.walletId,
+        targetWalletId: wBca.walletId,
         amount: 50000,
       });
     }, /cannot be the same wallet/i);

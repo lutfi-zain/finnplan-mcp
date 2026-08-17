@@ -96,8 +96,8 @@ async function extractAuthenticatedUserId(
   if (candidate.startsWith('fp_live_')) {
     try {
       const keyHash = await hashApiKey(candidate);
-      const user = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.apiKeyHash, keyHash)).get();
-      return user ? user.id : null;
+      const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).get();
+      return user ? user.userId : null;
     } catch {
       return null;
     }
@@ -116,8 +116,8 @@ async function extractAuthenticatedUserId(
   // Case C: Fallback check if a raw non-prefixed key was provided
   try {
     const keyHash = await hashApiKey(candidate);
-    const user = await db.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.apiKeyHash, keyHash)).get();
-    return user ? user.id : null;
+    const user = await db.select({ userId: schema.users.userId }).from(schema.users).where(eq(schema.users.userApiKeyHash, keyHash)).get();
+    return user ? user.userId : null;
   } catch {
     return null;
   }

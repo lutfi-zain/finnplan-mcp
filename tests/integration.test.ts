@@ -174,26 +174,30 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     const bca = await callTool('manage_wallet', {
       action: 'create',
       name: 'BCA Main',
+      institution: 'BCA',
       type: 'bank',
       balance: 10000000,
       currency: 'IDR',
     }, state.userA.token);
 
-    assert.equal(bca.name, 'BCA Main');
-    assert.equal(bca.type, 'bank');
-    assert.equal(bca.balance, 10000000);
-    assert.equal(bca.currency, 'IDR');
+    assert.equal(bca.walletName, 'BCA Main');
+    assert.equal(bca.walletInstitution, 'BCA');
+    assert.equal(bca.walletType, 'bank');
+    assert.equal(bca.walletBalance, 10000000);
+    assert.equal(bca.walletCurrency, 'IDR');
 
     const gopay = await callTool('manage_wallet', {
       action: 'create',
       name: 'GoPay',
+      institution: 'GoTo',
       type: 'e-wallet',
       balance: 500000,
     }, state.userA.token);
 
-    assert.equal(gopay.name, 'GoPay');
-    assert.equal(gopay.type, 'e-wallet');
-    assert.equal(gopay.balance, 500000);
+    assert.equal(gopay.walletName, 'GoPay');
+    assert.equal(gopay.walletInstitution, 'GoTo');
+    assert.equal(gopay.walletType, 'e-wallet');
+    assert.equal(gopay.walletBalance, 500000);
 
     state.wallets = { bca, gopay };
 
@@ -218,11 +222,11 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   it('Step 7: Update Wallet Balance (manage_wallet update)', async () => {
     const updated = await callTool('manage_wallet', {
       action: 'update',
-      walletId: state.wallets.bca.id,
+      walletId: state.wallets.bca.walletId,
       balance: 12000000,
     }, state.userA.token);
 
-    assert.equal(updated.balance, 12000000);
+    assert.equal(updated.walletBalance, 12000000);
     state.wallets.bca = updated;
 
     console.log(`    ✓ BCA Main balance updated to Rp 12,000,000`);
@@ -238,7 +242,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       type: 'expense',
       icon: '🍔',
     }, state.userA.token);
-    assert.equal(food.name, 'Food & Dining');
+    assert.equal(food.categoryName, 'Food & Dining');
 
     const transport = await callTool('manage_category', {
       action: 'create',
@@ -246,7 +250,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       type: 'expense',
       icon: '🚗',
     }, state.userA.token);
-    assert.equal(transport.name, 'Transportation');
+    assert.equal(transport.categoryName, 'Transportation');
 
     const salary = await callTool('manage_category', {
       action: 'create',
@@ -254,7 +258,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       type: 'income',
       icon: '💰',
     }, state.userA.token);
-    assert.equal(salary.name, 'Monthly Salary');
+    assert.equal(salary.categoryName, 'Monthly Salary');
 
     state.categories = { food, transport, salary };
 
@@ -272,14 +276,14 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     const budget = await callTool('manage_budget', {
       action: 'create',
       name: 'August Food Budget',
-      categoryId: state.categories.food.id,
+      categoryId: state.categories.food.categoryId,
       amount: 2000000,
       periodStart: '2026-08-01',
       periodEnd: '2026-08-31',
     }, state.userA.token);
 
-    assert.equal(budget.name, 'August Food Budget');
-    assert.equal(budget.amount, 2000000);
+    assert.equal(budget.budgetName, 'August Food Budget');
+    assert.equal(budget.budgetAmount, 2000000);
     state.budget = budget;
 
     console.log(`    ✓ Budget "August Food Budget" created (Rp 2,000,000)`);
@@ -291,51 +295,51 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   it('Step 11-14: Record Transactions (record_transaction)', async () => {
     // Step 11: Expense — Nasi Padang (BCA, Food, Rp 150K)
     const tx1 = await callTool('record_transaction', {
-      walletId: state.wallets.bca.id,
-      categoryId: state.categories.food.id,
-      budgetId: state.budget.id,
+      walletId: state.wallets.bca.walletId,
+      categoryId: state.categories.food.categoryId,
+      budgetId: state.budget.budgetId,
       amount: 150000,
       type: 'expense',
       description: 'Nasi Padang',
       transactionDate: '2026-08-10',
     }, state.userA.token);
-    assert.equal(tx1.amount, 150000);
-    assert.equal(tx1.type, 'expense');
+    assert.equal(tx1.transactionAmount, 150000);
+    assert.equal(tx1.transactionType, 'expense');
 
     // Step 12: Expense — Grab (GoPay, Transport, Rp 25K)
     const tx2 = await callTool('record_transaction', {
-      walletId: state.wallets.gopay.id,
-      categoryId: state.categories.transport.id,
+      walletId: state.wallets.gopay.walletId,
+      categoryId: state.categories.transport.categoryId,
       amount: 25000,
       type: 'expense',
       description: 'Grab ke kantor',
       transactionDate: '2026-08-10',
     }, state.userA.token);
-    assert.equal(tx2.amount, 25000);
+    assert.equal(tx2.transactionAmount, 25000);
 
     // Step 13: Income — Gaji (BCA, Salary, Rp 15M)
     const tx3 = await callTool('record_transaction', {
-      walletId: state.wallets.bca.id,
-      categoryId: state.categories.salary.id,
+      walletId: state.wallets.bca.walletId,
+      categoryId: state.categories.salary.categoryId,
       amount: 15000000,
       type: 'income',
       description: 'Gaji Agustus',
       transactionDate: '2026-08-01',
     }, state.userA.token);
-    assert.equal(tx3.amount, 15000000);
-    assert.equal(tx3.type, 'income');
+    assert.equal(tx3.transactionAmount, 15000000);
+    assert.equal(tx3.transactionType, 'income');
 
     // Step 14: Planned Expense (BCA, Food, Rp 500K, isPlanned=true)
     const tx4 = await callTool('record_transaction', {
-      walletId: state.wallets.bca.id,
-      categoryId: state.categories.food.id,
+      walletId: state.wallets.bca.walletId,
+      categoryId: state.categories.food.categoryId,
       amount: 500000,
       type: 'expense',
       description: 'Rencana makan minggu depan',
       isPlanned: true,
       transactionDate: '2026-08-20',
     }, state.userA.token);
-    assert.equal(tx4.isPlanned, 1);
+    assert.equal(tx4.transactionIsPlanned, 1);
 
     state.transactions = [tx1, tx2, tx3, tx4];
 
@@ -352,14 +356,14 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
 
     // Step 16: Filter by BCA wallet — should return 3
     const bcaTxs = await callTool('list_transactions', {
-      walletId: state.wallets.bca.id,
+      walletId: state.wallets.bca.walletId,
     }, state.userA.token);
     assert.equal(bcaTxs.length, 3, 'BCA wallet should have 3 transactions');
 
     // Step 17: Filter by type=income — should return 1
     const incomeTxs = await callTool('list_transactions', { type: 'income' }, state.userA.token);
     assert.equal(incomeTxs.length, 1, 'Should have 1 income transaction');
-    assert.equal(incomeTxs[0].amount, 15000000);
+    assert.equal(incomeTxs[0].transactionAmount, 15000000);
 
     // Step 18: Filter by isPlanned=true — should return 1
     const plannedTxs = await callTool('list_transactions', { isPlanned: true }, state.userA.token);
@@ -376,6 +380,8 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
 
     // Net worth: BCA (12M - 150K + 15M) + GoPay (500K - 25K) = 26,850,000 + 475,000 = 27,325,000 IDR
     assert.equal(summary.netWorthByCurrency.IDR, 27325000, `Net worth IDR should be 27,325,000, got ${summary.netWorthByCurrency?.IDR}`);
+    assert.equal(summary.netWorthByInstitution.BCA, 26850000);
+    assert.equal(summary.netWorthByInstitution.GoTo, 475000);
     assert.equal(summary.totalIncome, 15000000, 'Total income should be 15,000,000');
     assert.equal(summary.totalExpense, 175000, 'Total expense should be 175,000 (150K + 25K)');
     assert.equal(summary.netSavings, 14825000, 'Net savings should be 14,825,000');
@@ -392,7 +398,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
     const statusList = await callTool('manage_budget', { action: 'status' }, state.userA.token);
 
     assert.ok(Array.isArray(statusList), 'Should return an array');
-    const foodBudget = statusList.find((s: any) => s.budget.name === 'August Food Budget');
+    const foodBudget = statusList.find((s: any) => s.budget.budgetName === 'August Food Budget');
     assert.ok(foodBudget, 'Should find August Food Budget');
     assert.equal(foodBudget.spent, 150000, 'Spent should be 150,000');
     assert.equal(foodBudget.remaining, 1850000, 'Remaining should be 1,850,000');
@@ -407,45 +413,45 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
   it('Step 20.5: Transfer Funds & Update Transaction (transfer_funds & update_transaction)', async () => {
     // 1. Transfer Rp 1,000,000 from BCA to GoPay with Rp 2,500 admin fee
     const transfer = await callTool('transfer_funds', {
-      sourceWalletId: state.wallets.bca.id,
-      targetWalletId: state.wallets.gopay.id,
+      sourceWalletId: state.wallets.bca.walletId,
+      targetWalletId: state.wallets.gopay.walletId,
       amount: 1000000,
       adminFee: 2500,
       description: 'Transfer BCA to GoPay',
     }, state.userA.token);
 
-    assert.equal(transfer.type, 'transfer');
-    assert.equal(transfer.amount, 1000000);
-    assert.equal(transfer.adminFee, 2500);
+    assert.equal(transfer.transactionType, 'transfer');
+    assert.equal(transfer.transactionAmount, 1000000);
+    assert.equal(transfer.transactionAdminFee, 2500);
 
     // Verify wallets updated:
     // BCA was 26,850,000 -> 26,850,000 - 1,002,500 = 25,847,500
     // GoPay was 475,000 -> 475,000 + 1,000,000 = 1,475,000
     const walletsAfterTransfer = await callTool('manage_wallet', { action: 'list' }, state.userA.token);
-    const bcaW = walletsAfterTransfer.find((w: any) => w.id === state.wallets.bca.id);
-    const gopayW = walletsAfterTransfer.find((w: any) => w.id === state.wallets.gopay.id);
-    assert.equal(bcaW.balance, 25847500);
-    assert.equal(gopayW.balance, 1475000);
+    const bcaW = walletsAfterTransfer.find((w: any) => w.walletId === state.wallets.bca.walletId);
+    const gopayW = walletsAfterTransfer.find((w: any) => w.walletId === state.wallets.gopay.walletId);
+    assert.equal(bcaW.walletBalance, 25847500);
+    assert.equal(gopayW.walletBalance, 1475000);
 
     // 2. Update Transaction: Change memo and update transfer amount to 500,000
     const updatedTransfer = await callTool('update_transaction', {
-      transactionId: transfer.id,
+      transactionId: transfer.transactionId,
       amount: 500000,
       description: 'Revised Topup GoPay',
     }, state.userA.token);
-    assert.equal(updatedTransfer.amount, 500000);
-    assert.equal(updatedTransfer.description, 'Revised Topup GoPay');
+    assert.equal(updatedTransfer.transactionAmount, 500000);
+    assert.equal(updatedTransfer.transactionDescription, 'Revised Topup GoPay');
 
     // Verify atomic balance reconciliation:
     // BCA gets 500,000 back -> 25,847,500 + 500,000 = 26,347,500
     // GoPay loses 500,000 -> 1,475,000 - 500,000 = 975,000
     const walletsAfterUpdate = await callTool('manage_wallet', { action: 'list' }, state.userA.token);
-    const bcaW2 = walletsAfterUpdate.find((w: any) => w.id === state.wallets.bca.id);
-    const gopayW2 = walletsAfterUpdate.find((w: any) => w.id === state.wallets.gopay.id);
-    assert.equal(bcaW2.balance, 26347500);
-    assert.equal(gopayW2.balance, 975000);
+    const bcaW2 = walletsAfterUpdate.find((w: any) => w.walletId === state.wallets.bca.walletId);
+    const gopayW2 = walletsAfterUpdate.find((w: any) => w.walletId === state.wallets.gopay.walletId);
+    assert.equal(bcaW2.walletBalance, 26347500);
+    assert.equal(gopayW2.walletBalance, 975000);
 
-    console.log(`    ✓ Transfer Funds & Atomic Update: BCA Rp ${bcaW2.balance.toLocaleString()}, GoPay Rp ${gopayW2.balance.toLocaleString()}`);
+    console.log(`    ✓ Transfer Funds & Atomic Update: BCA Rp ${bcaW2.walletBalance.toLocaleString()}, GoPay Rp ${gopayW2.walletBalance.toLocaleString()}`);
   });
 
   // -------------------------------------------------------------------------
@@ -521,7 +527,7 @@ describe('Integration Test: Full User Journey (Deployed Worker + Remote D1)', ()
       async () => {
         await callTool('manage_wallet', {
           action: 'update',
-          walletId: state.wallets.bca.id,
+          walletId: state.wallets.bca.walletId,
           balance: 0,
         }, state.userB.token);
       },

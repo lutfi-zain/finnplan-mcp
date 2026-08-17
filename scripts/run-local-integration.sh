@@ -13,9 +13,7 @@ echo ""
 
 # 1. Reset and apply migrations to local D1
 echo "📦 Migrating local D1 database..."
-npx wrangler d1 execute finance_db --local --file=./drizzle/0000_nice_marvel_boy.sql > /dev/null 2>&1 || true
-npx wrangler d1 execute finance_db --local --file=./drizzle/0001_low_stingray.sql > /dev/null 2>&1 || true
-npx wrangler d1 execute finance_db --local --file=./drizzle/0001_add_transfer_and_admin_fee.sql > /dev/null 2>&1 || true
+npx wrangler d1 execute finance_db --local --file=./drizzle/0002_table_prefixed_schema_and_tz.sql > /dev/null 2>&1 || true
 echo "✅ Local D1 database ready."
 echo ""
 
@@ -63,7 +61,7 @@ if [ "$KEEP_DATA" = "1" ]; then
 else
   echo "🧹 Cleaning up test data from local D1..."
   npx wrangler d1 execute finance_db --local \
-    --command="DELETE FROM transactions WHERE user_id LIKE 'usr_%'; DELETE FROM budgets WHERE user_id LIKE 'usr_%'; DELETE FROM categories WHERE user_id LIKE 'usr_%'; DELETE FROM wallets WHERE user_id LIKE 'usr_%'; DELETE FROM users WHERE id LIKE 'usr_%';" > /dev/null 2>&1 || true
+    --command="DELETE FROM transactions WHERE transaction_user_id LIKE 'usr_%'; DELETE FROM budgets WHERE budget_user_id LIKE 'usr_%'; DELETE FROM categories WHERE category_user_id LIKE 'usr_%'; DELETE FROM wallets WHERE wallet_user_id LIKE 'usr_%'; DELETE FROM users WHERE user_id LIKE 'usr_%';" > /dev/null 2>&1 || true
 fi
 
 if [ $TEST_EXIT -eq 0 ]; then

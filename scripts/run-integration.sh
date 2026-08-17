@@ -41,8 +41,8 @@ if [ "$KEEP_DATA" = "1" ]; then
   echo "ℹ️  KEEP_DATA=1 detected. Skipping teardown/cleanup so test data stays in D1."
 else
   echo "🧹 Cleaning up test data from remote D1..."
-  npx wrangler d1 execute finance_db --remote --yes \
-    --command="DELETE FROM transactions WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM budgets WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM categories WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM wallets WHERE user_id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour'); DELETE FROM users WHERE id LIKE 'usr_%' AND created_at > datetime('now', '-1 hour');" 2>/dev/null || true
+  npx wrangler d1 execute finance_db --remote \
+    --command="DELETE FROM transactions WHERE transaction_user_id LIKE 'usr_%'; DELETE FROM budgets WHERE budget_user_id LIKE 'usr_%'; DELETE FROM categories WHERE category_user_id LIKE 'usr_%'; DELETE FROM wallets WHERE wallet_user_id LIKE 'usr_%'; DELETE FROM users WHERE user_id LIKE 'usr_%';" 2>/dev/null || true
   echo "✅ Test data cleaned up."
 fi
 echo ""

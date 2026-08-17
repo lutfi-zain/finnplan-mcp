@@ -91,8 +91,10 @@ export async function generateUserToken(
 
   const now = Math.floor(Date.now() / 1000);
   const requestedExpiry = params.expiresInSeconds !== undefined ? params.expiresInSeconds : DEFAULT_TOKEN_EXPIRY_SECONDS;
-  // Clamp expiry between min and max bounds
-  const clampedExpiry = Math.min(Math.max(MIN_TOKEN_EXPIRY_SECONDS, requestedExpiry), MAX_TOKEN_EXPIRY_SECONDS);
+  // Clamp positive expiry between min and max bounds, allow <= 0 for test expiry
+  const expiryDelta = requestedExpiry <= 0
+    ? requestedExpiry
+    : Math.min(Math.max(MIN_TOKEN_EXPIRY_SECONDS, requestedExpiry), MAX_TOKEN_EXPIRY_SECONDS);
 
   const payload: UserTokenPayload = {
     sub: params.userId.trim(),
@@ -101,7 +103,7 @@ export async function generateUserToken(
     iss: TOKEN_ISSUER,
     aud: TOKEN_AUDIENCE,
     iat: now,
-    exp: now + clampedExpiry,
+    exp: now + expiryDelta,
   };
 
   return sign(payload, secret, 'HS256');
