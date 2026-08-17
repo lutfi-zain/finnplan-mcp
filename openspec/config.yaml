@@ -1,32 +1,148 @@
+# ==============================================================================
+# OpenSpec Configuration for finnplan-mcp (Eve Finance Stateless MCP Server)
+# ==============================================================================
+# Framework: OpenSpec (Spec-Driven Development / SDD)
+# Schema: spec-driven (proposal -> specs -> design -> tasks -> apply -> archive)
+# ==============================================================================
+
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  # PROJECT IDENTITY & DOMAIN
+  - Project Name: finnplan-mcp (Eve Finance MCP Server)
+  - Domain: Personal Finance Management System exposed via Model Context Protocol (MCP)
+  - Repository: lutfi-zain/finnplan-mcp
+  - Role: High-performance, stateless MCP server deployed on Cloudflare Workers edge runtime.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  # CORE TECHNOLOGY STACK
+  - Runtime: Cloudflare Workers (V8 Isolate / workerd runtime)
+  - Language: TypeScript (strict mode, ESNext target, CommonJS module bundler via Wrangler)
+  - Web & Routing Framework: Hono (hono/jwt, hono/utils)
+  - MCP Implementation: @modelcontextprotocol/sdk (WebStandardStreamableHTTPServerTransport)
+  - Database: Cloudflare D1 (Serverless SQLite at the edge)
+  - ORM: Drizzle ORM (drizzle-orm/d1, drizzle-kit)
+  - Testing Framework: Node.js Test Runner (tsx --test tests/mcp.test.ts) with custom MockD1Database using node:sqlite
+  - Tooling & CLI: Wrangler CLI v4 (wrangler dev, wrangler deploy, wrangler d1 execute)
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+  # ARCHITECTURE & DESIGN PRINCIPLES
+  1. Stateless HTTP/SSE Transport:
+     - Endpoints: /mcp (Streamable HTTP & SSE) and /sse
+     - Transport: WebStandardStreamableHTTPServerTransport with enableJsonResponse: true
+     - Response Normalization: Empty 202/204 responses return {"jsonrpc": "2.0", "result": {}} with application/json header to prevent client-side EOF JSON parse failures.
+  2. Dual-Layer MCP-Native Authentication:
+     - Pure MCP Auth: Users register via register_user and authenticate via login_user tools directly over MCP JSON-RPC.
+     - Credentials:
+       * Persistent API Key: Starts with prefix fp_live_, hashed using SHA-256 (crypto.subtle.digest) before storage in users.user_api_key_hash.
+       * Self-Contained JWT: 15-minute expiration (DEFAULT_TOKEN_EXPIRY_SECONDS = 900), signed with HMAC-SHA256 (HS256) using Web Crypto API. Claims: sub (userId), name, email, iss ('eve-finance-mcp'), aud ('eve-finance-client'), iat, exp.
+     - Auth Header Extraction Order:
+       * Authorization: Bearer <fp_live_apiKey | jwt_token>
+       * X-API-Key / mcp-api-key header
+       * Query parameters (?apiKey=... or ?token=...)
+       * In-tool argument fallback (apiKey or token parameter in tool call payload)
+  3. Multi-Tenant Row-Level Security (RLS):
+     - Every data entity (wallets, categories, budgets, transactions) MUST be strictly scoped to userId extracted from the authenticated session.
+     - Cross-tenant data leakage is strictly forbidden. All SQL queries and Drizzle operations must include eq(table.userId, authenticatedUserId).
+  4. Atomic Balance Reconciliation & Financial Invariants:
+     - Balance updates must be calculated atomically on transactions creation, transfer, update, or deletion.
+     - Income adds to wallet balance (wallet_balance + amount).
+     - Expense subtracts amount and admin fee (wallet_balance - (amount + fee)).
+     - Transfers atomically deduct from source wallet (wallet_balance - (amount + fee)) and credit target wallet (target_wallet_balance + amount).
+     - Planned transactions (is_planned = 1) do NOT modify wallet balances.
+     - Updates to existing transactions must compute delta adjustments and reconcile balances accordingly.
+  5. Edge Runtime Constraints:
+     - Cloudflare Workers runtime (workerd) does NOT support Node.js native C++ addons or arbitrary filesystem I/O (fs).
+     - Use Web Standard APIs (fetch, crypto.subtle, Headers, Request, Response, URL).
+     - Date & time operations must use ISO-8601 strings with timezone support (src/utils/date.ts).
+  6. Strict Remote Data Protection (Zero-Remote-Deletion Invariant):
+     - NEVER delete, drop, truncate, or wipe data in Cloudflare remote D1 tables during any navigation, exploration, testing, code generation, script execution, or migration.
+     - All exploratory tests, seedings, and destructive debugging must exclusively target local mocks or local D1 (--local).
+     - Automated scripts or AI agents navigating or inspecting the project must NEVER run destructive SQL statements (such as DROP TABLE, TRUNCATE, or unbounded DELETE FROM) against remote instances (--remote).
+
+  # DATABASE SCHEMA CONVENTIONS (Drizzle + D1 SQLite)
+  - Tables in src/db/schema.ts:
+    * users: user_id (UUID PK), user_first_name, user_last_name, user_email (unique), user_whatsapp_number, user_api_key_hash (unique), user_created_at
+    * wallets: wallet_id (UUID PK), wallet_user_id (FK -> users.user_id ON DELETE CASCADE), wallet_name, wallet_institution, wallet_type, wallet_balance (REAL), wallet_currency, wallet_created_at
+    * categories: category_id (UUID PK), category_user_id (FK -> users.user_id ON DELETE CASCADE), category_name, category_type (expense/income), category_icon, category_created_at
+    * budgets: budget_id (UUID PK), budget_user_id (FK -> users.user_id ON DELETE CASCADE), budget_name, budget_category_id (FK -> categories.category_id ON DELETE SET NULL), budget_amount (REAL), budget_period_start, budget_period_end, budget_created_at
+    * transactions: transaction_id (UUID PK), transaction_user_id (FK -> users.user_id ON DELETE CASCADE), transaction_wallet_id (FK -> wallets.wallet_id ON DELETE CASCADE), transaction_target_wallet_id (FK -> wallets.wallet_id ON DELETE SET NULL), transaction_category_id (FK -> categories.category_id ON DELETE SET NULL), transaction_budget_id (FK -> budgets.budget_id ON DELETE SET NULL), transaction_amount (REAL), transaction_admin_fee (REAL), transaction_type (expense/income/transfer), transaction_description, transaction_is_planned (INTEGER 0/1), transaction_date (ISO-8601), transaction_created_at
+  - Key Constraints & Indexes:
+    * Primary keys generated via crypto.randomUUID() ($defaultFn(() => crypto.randomUUID())).
+    * Foreign keys with cascading deletes on userId and walletId.
+    * Indexes on (userId, date), (userId, periodStart, periodEnd), and all foreign key columns for fast edge lookups.
+
+  # MCP TOOLS & RESOURCES REGISTRY
+  - Tools (11 total in src/mcp.ts):
+    * Auth: register_user, login_user
+    * Feedback: submit_feedback (creates GitHub Issue via REST API)
+    * Entity Management: manage_wallet, manage_category, manage_budget
+    * Financial Transactions: record_transaction, transfer_funds, update_transaction, list_transactions
+    * Reporting & Analytics: financial_summary
+  - Resources (3 total):
+    * finance://db/schema: Database schema and table relationships
+    * finance://wallets/list: Live list of authenticated user wallets and balances
+    * finance://budgets/active: Current active budgets with spending utilization percentages
+
+  # COMMANDS & SCRIPTS
+  - npm test: Run test suite with mock D1 database (tests/mcp.test.ts)
+  - npm run typecheck: Run TypeScript static type check (tsc --noEmit)
+  - npm run build: Dry-run build with Wrangler (wrangler deploy --dry-run)
+  - npm run dev: Start local Cloudflare Workers dev server (wrangler dev)
+  - npm run test:local: Run integration tests against local dev server
+  - npm run test:remote: Run integration tests against deployed remote worker
+
+rules:
+  proposal:
+    - 'Clearly state the problem, motivation, and target user/client scenario in the "Why" section.'
+    - 'Explicitly declare all affected MCP tools, resources, and database schema changes in "What Changes".'
+    - 'Mark any breaking changes to MCP tool input schemas, resource URIs, or auth protocols with **BREAKING**.'
+    - 'In "Capabilities", list every new capability (e.g. specs/<capability-path>/spec.md) using kebab-case paths.'
+    - 'If modifying existing capabilities, reference their exact existing paths under openspec/specs/.'
+    - 'Explicitly define Non-Goals to avoid scope creep (e.g. out-of-scope third-party bank integrations, UI changes).'
+    - 'Outline security, multi-tenancy, and performance impact for Cloudflare Workers edge environment.'
+
+  specs:
+    - 'Write normative requirement statements using strict RFC 2119 keywords (SHALL, MUST, SHALL NOT).'
+    - 'Every requirement MUST include at least one concrete scenario using the exact header "#### Scenario: <Scenario Name>" (4 hashtags).'
+    - 'Scenario steps MUST use the "- **WHEN** ..." and "- **THEN** ..." (or "- **GIVEN** ...") structured format.'
+    - 'Cover both success cases and edge/failure cases (e.g., unauthorized token, invalid UUID, negative amount, insufficient balance, missing foreign key).'
+    - 'Delta specs for new capabilities MUST start with a "## Purpose" section (at least 50 characters).'
+    - 'When modifying existing requirements, copy the full existing requirement block under "## MODIFIED Requirements".'
+    - 'Keep specs implementation-agnostic: focus on externally observable JSON-RPC behaviors, inputs, outputs, errors, and validation constraints.'
+
+  design:
+    - 'Context & Boundaries: Reference proposal.md for motivation; focus design on architectural decisions and technical mechanics.'
+    - 'Decision Records: For every key technical choice, document rationale, alternatives considered, and why the chosen solution fits Cloudflare Workers/D1 constraints.'
+    - 'Zero Remote Deletion Invariant: Designs and migration strategies must guarantee that existing data in Cloudflare remote D1 tables is preserved and never dropped or truncated during navigation, exploratory operations, or schema evolution.'
+    - 'Schema & Data Modeling: Detail any Drizzle schema changes, D1 migration SQL scripts, index additions, and foreign key cascades.'
+    - 'State & Concurrency: Detail atomic balance reconciliation math and state transition handling for transactions/transfers.'
+    - 'Security & Multi-Tenancy: Detail RLS enforcement, auth verification paths, and cryptographic considerations (SHA-256, JWT HS256).'
+    - 'Edge Compatibility: Verify all proposed libraries and dependencies are compatible with the workerd runtime (no unsupported Node.js native bindings).'
+    - 'Risks & Mitigations: Format as "[Risk] -> Mitigation" covering edge compute limits (CPU time, memory, D1 query limits).'
+
+  tasks:
+    - 'Follow the checkbox markdown format exactly: "- [ ] X.Y Task description".'
+    - 'Group tasks logically under numbered Markdown "## <Phase Number>. <Phase Name>" headings (e.g., Setup, Schema & Database, Core Logic, MCP Tool Handlers, Tests & Verification, Documentation).'
+    - 'Order tasks strictly by dependency sequence (schema -> core logic -> MCP handlers -> unit tests -> integration tests).'
+    - 'Keep individual tasks small, atomic, and verifiable within a single working session.'
+    - 'Explicitly include tasks for writing/updating tests in tests/mcp.test.ts and validating TypeScript compilation via npm run typecheck.'
+    - 'Verify all testing and execution tasks are isolated to local test environments and strictly forbid destructive queries on remote Cloudflare D1 databases.'
+
+operations:
+  apply:
+    guidance:
+      - 'CRITICAL - REMOTE DATA IMMUTABILITY: NEVER delete, truncate, or drop data in the remote Cloudflare D1 database (wrangler d1 --remote) during navigation, testing, debugging, or applying changes. Remote production data must remain completely intact.'
+      - 'Read all completed change artifacts (proposal.md, specs/, design.md, tasks.md) before writing code.'
+      - 'Never bypass Multi-Tenant Row Level Security (RLS): always filter database queries by the authenticated userId.'
+      - 'Use Web Standard APIs and ensure full compatibility with Cloudflare Workers (workerd) runtime.'
+      - 'Ensure balance calculations on transactions and transfers are atomic and handle currency precision correctly.'
+      - 'Run npm run typecheck and npm test after modifying code to verify zero regressions.'
+      - 'Mark tasks complete "- [x]" in tasks.md progressively as each item is finished.'
+
+  archive:
+    guidance:
+      - 'Verify that all tasks in tasks.md are marked complete before initiating archive.'
+      - 'Ensure openspec validate passes with zero errors and zero warnings.'
+      - 'Verify that delta specs in the change directory merge cleanly into openspec/specs/.'
+      - 'Verify that changes and migrations are non-destructive to remote Cloudflare D1 tables and that no remote data was altered or deleted during verification.'
+      - 'Update project documentation (README.md, TOOLS.md, or database_schema.md) if public MCP tools, resource URIs, or database schemas were changed.'
+      - 'Provide a concise completion summary highlighting delivered capabilities, test results, and verified invariants.'
